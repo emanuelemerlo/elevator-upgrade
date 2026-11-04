@@ -5,6 +5,7 @@
 #include "Statistics.h"
 #include "EventBus.h"
 #include "SimulationClock.h"
+#include "Energy.h"
 
 Elevator::Elevator(const std::string& id)
 {
@@ -68,6 +69,9 @@ void Elevator::ElevatorThreadFunction()
 
     if (StopRequested())
       break;
+
+    // Nothing to do: the cabin may go and wait on its home floor (idle parking).
+    ParkIfIdle();
 
     {
       // Wait with a predicate: a notification sent before the thread starts waiting
@@ -178,6 +182,7 @@ bool Elevator::CloseDoors()
     m_doorsStatus = DoorsStatus::Closed;
     m_doorsMotion = DoorsMotion::None;
     ++m_doorCycles;
+    AddEnergy(Energy::DoorCycleWh);
     m_log.Trace("Doors closed", Log::TraceLevel::Verbose);
   }
 
@@ -260,6 +265,7 @@ void Elevator::Move(const Floors::FloorNumber firstRequestedFloor)
   {
     CloseDoors();
     ++m_runCounter;
+    AddEnergy(Energy::RunStartWh);
 
     do
     {
@@ -277,6 +283,7 @@ void Elevator::Move(const Floors::FloorNumber firstRequestedFloor)
           break; // simulation aborted
         m_currentFloor = currentFloor + 1;
         ++m_totalFloorsTravelled;
+        AddTravelEnergy(Direction::Up);
       }
       else if (requestedFloor < currentFloor && currentFloor > 0)
       {
@@ -288,6 +295,7 @@ void Elevator::Move(const Floors::FloorNumber firstRequestedFloor)
           break; // simulation aborted
         m_currentFloor = currentFloor - 1;
         ++m_totalFloorsTravelled;
+        AddTravelEnergy(Direction::Down);
       }
 
       // A call can be assigned while the cabin is moving (the dispatcher considers an elevator
@@ -370,6 +378,70 @@ void Elevator::SetId(std::string id)
   m_people.SetId(m_name);
   m_floors.SetId(m_name);
   m_log.SetTraceId(m_name);
+}
+
+void Elevator::SetHomeFloor(const Floors::FloorNumber floor)
+{
+  {
+    std::lock_guard<std::mutex> lock(m_goMutex);
+    m_homeFloor = floor;
+    m_callPending = true; // an idle cabin wakes up, finds no stop and goes to its home floor
+  }
+
+  m_go.notify_all();
+}
+
+void Elevator::AddEnergy(const double wh)
+{
+  m_energyMilliWh += static_cast<std::uint64_t>(std::llround(wh * 1000.0));
+}
+
+void Elevator::AddTravelEnergy(const Direction direction)
+{
+  AddEnergy(Energy::TravelPerFloorWh(m_people.Count(), direction));
+}
+
+void Elevator::ParkIfIdle()
+{
+  const auto home = m_homeFloor.load();
+  if (!Floors::IsValid(home) || home == m_currentFloor.load())
+    return;
+
+  const auto callArrived = [this]()
+  {
+    std::lock_guard<std::mutex> lock(m_goMutex);
+    return m_callPending || m_outOfOrderRequested.load();
+  };
+
+  if (callArrived())
+    return;
+
+  // While parking the dispatcher sees an idle cabin (no direction, no decided destination): a call stops the
+  // parking at the next floor, which is what the route simulation of an idle cabin assumes.
+  ++m_runCounter;
+  AddEnergy(Energy::RunStartWh);
+  m_status = ElevatorStatus::Moving;
+  m_displayDirection = home > m_currentFloor.load() ? Direction::Up : Direction::Down;
+  m_log.Trace("Parking to floor " + std::to_string(home), Log::TraceLevel::Verbose);
+
+  while (m_currentFloor.load() != home && !StopRequested() && !callArrived())
+  {
+    const auto currentFloor = m_currentFloor.load();
+    const auto nextFloor = home > currentFloor ? currentFloor + 1 : currentFloor - 1;
+
+    m_motionStartMs = SimulationClock::Now();
+    m_motionToFloor = nextFloor;
+    if (!Configuration::Simulation::SleepFor(Configuration::Elevator::TimeToReachTheNextFloor()))
+      break;
+
+    m_currentFloor = nextFloor;
+    ++m_totalFloorsTravelled;
+    AddTravelEnergy(nextFloor > currentFloor ? Direction::Up : Direction::Down);
+  }
+
+  m_motionToFloor = Floors::InvalidFloor;
+  m_status = ElevatorStatus::Idle;
+  m_displayDirection = Direction::None;
 }
 
 bool Elevator::StopRequested() const
@@ -502,5 +574,6 @@ ElevatorSnapshot Elevator::GetSnapshot() const
   snapshot.travelledFloors = m_totalFloorsTravelled.load();
   snapshot.runs = m_runCounter.load();
   snapshot.doorCycles = m_doorCycles.load();
+  snapshot.travelEnergyWh = GetTravelEnergyWh();
   return snapshot;
 }

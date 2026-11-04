@@ -294,6 +294,8 @@ button, input, select { font: inherit; color: inherit; }
 
 /* Waves and actions -------------------------------------------------------- */
 
+.panel .note + .actions-start { margin-top: 0.4rem; }
+
 .waves { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; }
 
 .inline { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.6rem; font-size: 0.9rem; }
@@ -393,3 +395,74 @@ summary { cursor: pointer; font-weight: 500; }
 @media (prefers-reduced-motion: reduce) {
   body { transition: none; }
 }
+
+/* Runs and comparisons ------------------------------------------------------- */
+
+.actions-start { justify-content: flex-start; flex-wrap: wrap; margin-top: 0.4rem; }
+
+.run-info { margin: -0.25rem 0 0.6rem; font-size: 0.82rem; color: var(--ink-soft); }
+.run-info .hands-on { color: var(--lamp-deep); font-weight: 600; }
+
+.batch-banner {
+  position: absolute;
+  bottom: 2.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--ink);
+  color: var(--steel-50);
+  padding: 0.45rem 0.6rem 0.45rem 1rem;
+  border-radius: var(--radius-small);
+  max-width: 92%;
+  font-weight: 500;
+}
+
+.batch-banner .btn { color: var(--ink); }
+
+fieldset {
+  border: 1px solid var(--steel-200);
+  border-radius: var(--radius-small);
+  margin: 1rem 0 0;
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+legend { font-size: 0.85rem; color: var(--ink-soft); padding: 0 0.3rem; }
+fieldset label { display: flex; align-items: center; gap: 0.35rem; }
+.inline input.wide { width: 9rem; }
+
+.runs-dialog { max-width: min(78rem, calc(100vw - 2rem)); width: 100%; }
+.runs-tools { display: flex; gap: 1.5rem; align-items: center; flex-wrap: wrap; }
+.runs-tools .inline { margin: 0.5rem 0 0; }
+.runs-tools select { padding: 0.25rem 0.4rem; border: 1px solid var(--steel-400); border-radius: var(--radius-small); max-width: 34rem; }
+
+.charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 0.75rem 1.25rem;
+  margin: 0.9rem 0;
+}
+
+.chart h3 { font-size: 0.9rem; margin: 0 0 0.3rem; font-weight: 600; }
+.chart ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.2rem; }
+.chart li { display: grid; grid-template-columns: 9.5rem 1fr 4.2rem; gap: 0.4rem; align-items: center; font-size: 0.78rem; }
+.chart .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chart .bar { height: 0.65rem; background: var(--steel-100); border-radius: 3px; position: relative; }
+.chart .bar span { position: absolute; inset: 0 auto 0 0; background: var(--steel-400); border-radius: 3px; }
+.chart .best .bar span { background: var(--go); }
+.chart .value { text-align: right; font-variant-numeric: tabular-nums; }
+
+.table-wrap { overflow-x: auto; max-height: 40vh; border: 1px solid var(--steel-200); border-radius: var(--radius-small); background: white; }
+table.runs { border-collapse: collapse; width: 100%; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+table.runs th, table.runs td { padding: 0.3rem 0.55rem; border-bottom: 1px solid var(--steel-100); text-align: right; white-space: nowrap; }
+table.runs th { position: sticky; top: 0; background: var(--steel-50); font-weight: 600; z-index: 1; }
+table.runs td.text, table.runs th.text { text-align: left; }
+table.runs td.best { color: var(--go); font-weight: 600; }
+table.runs tr.hands-on td { color: var(--ink-soft); font-style: italic; }
+table.runs td button { padding: 0.1rem 0.5rem; font-size: 0.78rem; }
+
+.numbers dd.small-number { font-size: 1.2rem; }

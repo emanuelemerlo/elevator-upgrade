@@ -8,6 +8,8 @@
 #include "Statistics.h"
 #include "AssignmentOptimizer.h"
 #include "EventBus.h"
+#include "SimulationClock.h"
+#include "Energy.h"
 
 #include <map>
 #include <random>
@@ -379,13 +381,39 @@ Management::Management(const unsigned int numberOfElevators)
     m_elevators.back()->SetCapacityFreedHandler([this]() { RequestPendingRetry(); });
   }
 
+  // Idle parking: where every cabin waits when it has nothing to do.
+  const auto floors = Floors::TotalFloors();
+  for (std::size_t index = 0U; index < m_elevators.size(); ++index)
+  {
+    switch (Configuration::Dispatch::IdleParking())
+    {
+    case Configuration::Dispatch::Parking::Lobby:
+      m_elevators[index]->SetHomeFloor(Floors::BottomFloor);
+      break;
+
+    case Configuration::Dispatch::Parking::Spread:
+    {
+      // Home floors in the middle of equal zones of the building: 4 cabins in 20 floors wait at 2, 7, 12, 17.
+      const auto zone = static_cast<double>(floors) / static_cast<double>(m_elevators.size());
+      const auto home = static_cast<Floors::FloorNumber>((static_cast<double>(index) + 0.5) * zone);
+      m_elevators[index]->SetHomeFloor(std::min(home, Floors::TopFloor()));
+      break;
+    }
+
+    case Configuration::Dispatch::Parking::Stay:
+    default:
+      break;
+    }
+  }
+
   m_log.SetTraceId("Management");
 
   // Start pending calls worker
   m_pendingThreadRunning = true;
   m_pendingThread = std::make_unique<std::thread>([this]() {
     // Retry period (real time) when no event wakes the worker up earlier: retrying is cheap and harmless.
-    const auto fallbackRetry = std::chrono::milliseconds(20);
+    // Short, because it is also the period of the patience check: at high speed 5 ms are several simulated seconds.
+    const auto fallbackRetry = std::chrono::milliseconds(5);
 
     std::unique_lock<std::mutex> lock(m_pendingMutex);
 
@@ -393,6 +421,9 @@ Management::Management(const unsigned int numberOfElevators)
     {
       m_pendingCond.wait_for(lock, fallbackRetry, [this]() { return m_retryRequested || !m_pendingThreadRunning; });
       m_retryRequested = false;
+
+      // Passengers who have waited longer than their patience give up and take the stairs.
+      SendImpatientToTheStairs();
 
       if (m_pendingCalls.empty() || !m_pendingThreadRunning)
         continue;
@@ -419,6 +450,29 @@ Management::Management(const unsigned int numberOfElevators)
         m_pendingCalls.erase(std::remove(m_pendingCalls.begin(), m_pendingCalls.end(), call), m_pendingCalls.end());
     }
   });
+}
+
+void Management::SendImpatientToTheStairs()
+{
+  // Called by the pending worker with m_pendingMutex held.
+  const auto nowMs = SimulationClock::Now();
+
+  for (const auto& call : Floors::GetPeople().RemoveImpatient(nowMs))
+  {
+    // A call still waiting for capacity must not be assigned any more. If a cabin was already coming,
+    // it will stop at an empty landing, as it happens in real buildings.
+    m_pendingCalls.erase(std::remove(m_pendingCalls.begin(), m_pendingCalls.end(), call), m_pendingCalls.end());
+    Statistics::RecordAbandonedCall();
+
+    m_log.Trace("Call " + call->ToString() + " took the stairs", Log::TraceLevel::Verbose);
+
+    EventBus::Publish("stairs", Json::Writer::Object()
+      .Add("id", static_cast<unsigned long long>(call->GetId()))
+      .Add("floor", call->GetStartFloor())
+      .Add("to", call->GetDestinationFloor())
+      .Add("elevator", call->GetAssignedElevator())
+      .Add("waitMs", static_cast<long long>(call->GetWaitingTime().count())));
+  }
 }
 
 void Management::EnqueuePendingCall(const std::shared_ptr<Call>& call)
@@ -506,6 +560,16 @@ bool Management::SetOutOfOrder(const std::string& elevatorId, const bool outOfOr
   return true;
 }
 
+Management::EnergyTotals Management::GetEnergy() const
+{
+  EnergyTotals totals;
+  for (const auto& elevator : m_elevators)
+    totals.travelWh += elevator->GetTravelEnergyWh();
+
+  totals.standbyWh = Energy::StandbyWh(m_elevators.size(), SimulationClock::Now());
+  return totals;
+}
+
 std::size_t Management::PendingCallsCount() const
 {
   std::lock_guard<std::mutex> lock(m_pendingMutex);
@@ -570,14 +634,37 @@ bool Management::AssignCallInternal(const std::shared_ptr<Call>& call, bool enqu
 
   AssignmentCandidate* best = nullptr;
   bool onTheWayFound = false;
+  const auto strategy = Configuration::Dispatch::DispatchStrategy();
 
-  for (auto& candidate : candidates)
+  for (std::size_t index = 0U; index < candidates.size(); ++index)
   {
+    auto& candidate = candidates[index];
     if (!candidate.evaluation.feasible)
       continue;
 
     const auto wearRatio = maxWear > minWear ? (candidate.wear - minWear) / (maxWear - minWear) : 0.0;
-    candidate.score = candidate.evaluation.marginalCostMs + wearRatio * timing.floorMs;
+    const auto distance = static_cast<double>(std::max(states[index].floor, call->GetStartFloor()) -
+      std::min(states[index].floor, call->GetStartFloor()));
+
+    switch (strategy)
+    {
+    case Configuration::Dispatch::Strategy::Nearest:
+      // Closest cabin, whatever it is doing; wear only breaks the ties.
+      candidate.score = distance + wearRatio * 0.01;
+      break;
+
+    case Configuration::Dispatch::Strategy::Collective:
+      // Closest among the idle cabins and those already sweeping towards the call; a cabin that has to turn around
+      // first counts as if it were a whole building height further away.
+      candidate.score = distance + (candidate.evaluation.onTheWay ? 0.0 : 2.0 * static_cast<double>(Floors::TotalFloors())) +
+        wearRatio * 0.01;
+      break;
+
+    case Configuration::Dispatch::Strategy::Optimized:
+    default:
+      candidate.score = candidate.evaluation.marginalCostMs + wearRatio * timing.floorMs;
+      break;
+    }
 
     onTheWayFound = onTheWayFound || candidate.evaluation.onTheWay;
 
@@ -649,7 +736,8 @@ bool Management::AssignCallInternal(const std::shared_ptr<Call>& call, bool enqu
         item.Add("state", "full");
       else
         item.Add("state", "ok")
-            .Add("costMs", candidate.score, 0)
+            .Add("score", candidate.score, 2)
+            .Add("costMs", candidate.evaluation.marginalCostMs, 0)
             .Add("pickupMs", candidate.evaluation.pickupEtaMs, 0)
             .Add("onTheWay", candidate.evaluation.onTheWay);
 
@@ -665,6 +753,7 @@ bool Management::AssignCallInternal(const std::shared_ptr<Call>& call, bool enqu
       .Add("dropoffMs", best->evaluation.dropoffEtaMs, 0)
       .Add("onTheWay", best->evaluation.onTheWay)
       .Add("retry", !enqueueIfCapacityLimited)
+      .Add("strategy", Configuration::Dispatch::StrategyName(strategy))
       .Add("candidates", candidatesJson));
   }
 
@@ -712,6 +801,7 @@ std::vector<std::string> Management::BuildReport() const
   addGlobalStat("Assigned calls", std::to_string(statistics.assignedCalls));
   addGlobalStat("Boarded passengers", std::to_string(statistics.boardedPassengers));
   addGlobalStat("Completed passengers", std::to_string(statistics.completedPassengers));
+  addGlobalStat("Took the stairs", std::to_string(statistics.abandonedCalls));
   addGlobalStat("Simulation time", Configuration::Simulation::CurrentDayTimeLabel());
   addGlobalStat("Average wait", FormatSeconds(statistics.AverageWaitTimeMs()));
   addGlobalStat("Max wait", FormatSeconds(static_cast<double>(statistics.maxWaitTimeMs)));
@@ -720,6 +810,19 @@ std::vector<std::string> Management::BuildReport() const
   addGlobalStat("Wait p99", FormatSeconds(waitDistribution.p99Ms));
   addGlobalStat("Average journey", FormatSeconds(statistics.AverageJourneyTimeMs()));
   addGlobalStat("Max journey", FormatSeconds(static_cast<double>(statistics.maxJourneyTimeMs)));
+
+  const auto energy = GetEnergy();
+  const auto formatEnergy = [](const double value, const char* unit)
+  {
+    std::stringstream text;
+    text << std::fixed << std::setprecision(2) << value << " " << unit;
+    return text.str();
+  };
+
+  addGlobalStat("Energy, travel", formatEnergy(energy.travelWh / 1000.0, "kWh"));
+  addGlobalStat("Energy, standby", formatEnergy(energy.standbyWh / 1000.0, "kWh"));
+  addGlobalStat("Energy per trip", statistics.completedPassengers == 0U ? "n/a" :
+    formatEnergy(energy.TotalWh() / static_cast<double>(statistics.completedPassengers), "Wh"));
 
   AddSeparator(report, { 22U, 17U });
   report.push_back("");
@@ -738,8 +841,10 @@ std::vector<std::string> Management::BuildReport() const
     AddTableRow(report, { indicator, value, level, notes }, { 29U, 17U, 5U, 18U }, { false, true, false, false });
   };
 
+  // Passengers who took the stairs are not waiting any more.
+  const auto closedBeforeBoarding = statistics.boardedPassengers + statistics.abandonedCalls;
   const auto pendingBoarding =
-    statistics.queuedCalls > statistics.boardedPassengers ? statistics.queuedCalls - statistics.boardedPassengers : 0U;
+    statistics.queuedCalls > closedBeforeBoarding ? statistics.queuedCalls - closedBeforeBoarding : 0U;
   const auto pendingCompletion =
     statistics.boardedPassengers > statistics.completedPassengers ? statistics.boardedPassengers - statistics.completedPassengers : 0U;
   const auto maxWaitRatio =

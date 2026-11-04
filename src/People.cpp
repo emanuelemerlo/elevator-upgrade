@@ -69,6 +69,26 @@ std::vector<std::shared_ptr<Call>> People::ReleaseAssigned(const std::string& el
   return released;
 }
 
+std::vector<std::shared_ptr<Call>> People::RemoveImpatient(const long long nowMs)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+
+  std::vector<std::shared_ptr<Call>> impatient;
+  for (auto person = begin(); person != end();)
+  {
+    if ((*person)->HasLostPatience(nowMs))
+    {
+      impatient.push_back(*person);
+      person = erase(person);
+      continue;
+    }
+
+    ++person;
+  }
+
+  return impatient;
+}
+
 void People::Clear()
 {
   std::lock_guard<std::mutex> lock(m_mutex);

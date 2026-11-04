@@ -31,6 +31,23 @@ const ui = {
   statAvgWait: $('statAvgWait'),
   statP95Wait: $('statP95Wait'),
   statMaxWait: $('statMaxWait'),
+  statStairs: $('statStairs'),
+  statEnergy: $('statEnergy'),
+  statWhPerTrip: $('statWhPerTrip'),
+  runInfo: $('runInfo'),
+  decisionNote: $('decisionNote'),
+  batchBanner: $('batchBanner'),
+  batchText: $('batchText'),
+  compareDialog: $('compareDialog'),
+  compareForm: $('compareForm'),
+  compareError: $('compareError'),
+  compareCount: $('compareCount'),
+  runsDialog: $('runsDialog'),
+  scenarioFilter: $('scenarioFilter'),
+  scenarioNote: $('scenarioNote'),
+  showHandsOn: $('showHandsOn'),
+  runsCharts: $('runsCharts'),
+  runsTable: $('runsTable'),
   history: $('history'),
   decisionTitle: $('decisionTitle'),
   decision: $('decision'),
@@ -267,7 +284,7 @@ function describe(event) {
     case 'refused':
       return { text: `Cabin ${d.elevator} is full: #${d.id} waits for another one.` };
     case 'pending':
-      if (d.reason === 'noService') return { text: `#${d.id} waits: no cabin is in service.`, cls: 'fault' };
+      if (d.reason === 'noService') return mine || all ? { text: `#${d.id} waits: no cabin is in service.`, cls: 'fault' } : null;
       return mine || all ? { text: `#${d.id} waits: every cabin is full.` } : null;
     case 'fault':
       return {
@@ -286,10 +303,28 @@ function describe(event) {
       if (d.action === 'step') return { text: 'One step forward.' };
       return null;
     case 'finished':
-      return { text: `Everybody has arrived: ${d.completed} trips completed. The clock is paused.`, cls: 'good' };
+      return {
+        text: `Everybody is home: ${d.completed} trips${d.stairs ? `, ${d.stairs} by the stairs` : ''}. Result saved${d.clean ? '' : ' as a hands-on run'}; the clock is paused.`,
+        cls: 'good',
+      };
+    case 'stairs':
+      return mine || all || stairsInFeed()
+        ? { text: `#${d.id} gave up after ${seconds(d.waitMs)} at floor ${d.floor} and took the stairs.`, cls: mine ? 'mine' : '' }
+        : null;
+    case 'batch':
+      return { text: `Comparison, variant ${d.index + 1} of ${d.total}: ${d.label}.` };
+    case 'batchDone':
+      return { text: d.cancelled ? `Comparison stopped after ${d.completed} of ${d.total} variants.` : `Comparison done: ${d.total} variants.`, cls: 'good' };
     default:
       return null;
   }
+}
+
+// The first few stairs takers of a run are always reported, then only with "every passenger".
+let stairsReported = 0;
+function stairsInFeed() {
+  stairsReported += 1;
+  return stairsReported <= 5;
 }
 
 function addToFeed(event) {
@@ -308,6 +343,12 @@ function addToFeed(event) {
   while (ui.feed.children.length > 150) ui.feed.lastElementChild.remove();
 }
 
+const STRATEGY_NOTES = {
+  Optimized: 'Each bar is the extra passenger time the call would add to that cabin\'s route (waiting counts double). The shortest bar wins.',
+  Nearest: 'Each bar is the distance of the cabin from the call, in floors, whatever the cabin is doing. The closest one wins.',
+  Collective: 'Each bar is the distance in floors; a cabin that has to turn around first counts as if it were two building heights further. The shortest bar wins.',
+};
+
 function showDecision(event) {
   const d = event.data;
   const mine = myCalls.has(d.id);
@@ -325,8 +366,11 @@ function showDecision(event) {
   ui.decisionTitle.textContent =
     `${mine ? 'Your call' : `Call #${d.id}`}, floor ${d.from} to ${d.to}: cabin ${d.elevator}, pickup in ${seconds(d.pickupMs)}.`;
 
-  const costs = d.candidates.filter((c) => c.state === 'ok').map((c) => c.costMs);
-  const maxCost = Math.max(1, ...costs);
+  const optimized = !d.strategy || d.strategy === 'Optimized';
+  const scoreOf = (c) => (c.score !== undefined ? c.score : c.costMs);
+  const costs = d.candidates.filter((c) => c.state === 'ok').map(scoreOf);
+  const maxCost = Math.max(optimized ? 1 : 0.5, ...costs);
+  ui.decisionNote.textContent = STRATEGY_NOTES[d.strategy] || STRATEGY_NOTES.Optimized;
 
   ui.decision.replaceChildren(...d.candidates.map((candidate) => {
     const item = document.createElement('li');
@@ -340,23 +384,41 @@ function showDecision(event) {
     const bar = document.createElement('span');
     bar.className = 'bar';
     const fill = document.createElement('span');
-    fill.style.width = candidate.state === 'ok' ? `${Math.max(3, (candidate.costMs / maxCost) * 100)}%` : '0';
+    fill.style.width = candidate.state === 'ok' ? `${Math.max(3, (scoreOf(candidate) / maxCost) * 100)}%` : '0';
     bar.append(fill);
 
     const value = document.createElement('span');
     value.className = 'value';
-    value.textContent = candidate.state === 'ok'
-      ? seconds(candidate.costMs)
-      : candidate.state === 'outOfOrder' ? 'out of order' : 'full';
+    let label = 'full';
+    if (candidate.state === 'outOfOrder') label = 'out of order';
+    else if (candidate.state === 'ok' && optimized) label = seconds(scoreOf(candidate));
+    else if (candidate.state === 'ok') {
+      const floors = Math.abs(Math.round(scoreOf(candidate) % (2 * (state ? state.building.floors : 1000))));
+      label = `${floors} fl.${candidate.onTheWay || d.strategy === 'Nearest' ? '' : ' +turn'}`;
+    }
+    value.textContent = label;
 
     item.append(cabin, bar, value);
     return item;
   }));
 }
 
+let lastBatchScenario = null;
+
+function anyDialogOpen() {
+  return Boolean(document.querySelector('dialog[open]'));
+}
+
 function handleEvent(event) {
   if (event.type === 'assign') showDecision(event);
+  if (event.type === 'stairs') addWalker(event.data);
+  if (event.type === 'batchDone' && !event.data.cancelled) openRuns(lastBatchScenario);
+  if (event.type === 'batch') lastBatchScenario = null;
   if (event.type === 'start') {
+    stairsReported = 0;
+    walkers.length = 0;
+    lastWalkerStart.clear();
+    if (event.data.batch) lastBatchScenario = event.data.scenario;
     decisionShownAt = 0;
     decisionPinnedUntil = 0;
     decisionWaiting = null;
@@ -365,7 +427,8 @@ function handleEvent(event) {
     ui.feed.replaceChildren();
   }
   addToFeed(event);
-  if (event.type === 'finished' && !ui.reportDialog.open && !ui.runDialog.open) openReport(true);
+  // A run of a comparison ends quietly: the results open when the whole comparison is done.
+  if (event.type === 'finished' && !event.data.batch && !anyDialogOpen()) openReport(true);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -408,6 +471,26 @@ function updatePanel() {
   ui.statAvgWait.textContent = stats.boarded ? shortDuration(stats.avgWaitMs) : '–';
   ui.statP95Wait.textContent = stats.boarded ? shortDuration(stats.p95WaitMs) : '–';
   ui.statMaxWait.textContent = stats.boarded ? shortDuration(stats.maxWaitMs) : '–';
+  ui.statStairs.textContent = stats.stairs;
+  ui.statEnergy.textContent = `${(stats.energyWh / 1000).toFixed(stats.energyWh < 10000 ? 2 : 1)} kWh`;
+  ui.statWhPerTrip.textContent = stats.completed ? `${stats.whPerTrip.toFixed(1)} Wh` : '–';
+  ui.statEnergy.title = `Motors and doors ${(stats.travelWh / 1000).toFixed(2)} kWh, standby ${(stats.standbyWh / 1000).toFixed(2)} kWh`;
+
+  const run = state.run;
+  const parking = { Stay: 'idle cabins stay where they stop', Lobby: 'idle cabins go back to the lobby', Spread: 'idle cabins spread along the building' };
+  ui.runInfo.innerHTML = '';
+  ui.runInfo.append(`${run.strategy} dispatch, ${parking[run.parking] || run.parking}. Scenario ${run.scenario} (seed ${run.seed}). `);
+  if (run.interventions > 0) {
+    const handsOn = document.createElement('span');
+    handsOn.className = 'hands-on';
+    handsOn.textContent = `Hands-on run (${run.interventions} ${run.interventions === 1 ? 'intervention' : 'interventions'}).`;
+    ui.runInfo.append(handsOn);
+  }
+
+  const batch = run.batch;
+  ui.batchBanner.hidden = !batch.running;
+  if (batch.running) ui.batchText.textContent = `Comparing ${batch.index + 1} of ${batch.total}: ${batch.label}`;
+  for (const button of document.querySelectorAll('[data-wave], #newRunButton, #compareButton')) button.disabled = batch.running;
 
   updateProfileMarker();
   drawHistory();
@@ -708,11 +791,15 @@ function drawBuilding() {
     ctx.textBaseline = 'middle';
     ctx.fillText(String(floor), g.x0 + g.labelWidth / 2, y + h / 2);
 
+    // The door of the stairs, at the far end of the landing.
+    const door = stairsDoor(g, floor);
+    drawStairsDoor(ctx, door);
+
     // Waiting passengers, lined up towards the lifts.
     const people = waitingByFloor.get(floor) || [];
     const size = clamp(h * 0.62, 8, 22);
     const spacing = size * 0.75;
-    const capacity = Math.max(1, Math.floor((g.landingWidth - 40) / spacing));
+    const capacity = Math.max(1, Math.floor((g.landingWidth - 46 - door.w) / spacing));
     const shown = people.slice(0, capacity);
     shown.forEach((person, index) => {
       const px = g.landingX + g.landingWidth - 30 - index * spacing;
@@ -735,6 +822,8 @@ function drawBuilding() {
     if (floor < floors - 1) drawTriangle(ctx, bx, y + h * 0.33, triangle, true, goingUp ? COLORS.lamp : '#c3cad1');
     if (floor > 0) drawTriangle(ctx, bx, y + h * 0.7, triangle, false, goingDown ? COLORS.lamp : '#c3cad1');
   }
+
+  drawWalkers(ctx, g);
 
   // Shafts and cabins.
   g.cabins = [];
@@ -852,6 +941,81 @@ function drawBuilding() {
   // Ground.
   ctx.fillStyle = '#6e7780';
   ctx.fillRect(0, floorTop(g, 0) + g.floorHeight, width, height);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The stairs: passengers who lose their patience leave the queue and walk, one after the other,
+// to the door of the stairs at the far end of the landing.
+
+const WALK_MS = 1900;           // real time of the walk, whatever the simulation speed
+const WALK_GAP_MS = 320;        // distance between two walkers leaving the same floor
+const MAX_WALKERS = 60;
+const walkers = [];
+const lastWalkerStart = new Map();
+
+function addWalker(data) {
+  if (walkers.length >= MAX_WALKERS) return;
+  const now = performance.now();
+  const start = Math.max(now, (lastWalkerStart.get(data.floor) || 0) + WALK_GAP_MS);
+  lastWalkerStart.set(data.floor, start);
+  walkers.push({ floor: data.floor, start, mine: myCalls.has(data.id), color: waitColor(data.waitMs) });
+}
+
+function stairsDoor(g, floor) {
+  const h = g.floorHeight;
+  const w = clamp(h * 0.5, 7, 22);
+  const doorH = Math.min(h - 4, w * 1.9);
+  return { x: g.landingX + 4, y: floorTop(g, floor) + h - 2 - doorH, w, h: doorH };
+}
+
+function drawStairsDoor(ctx, door) {
+  ctx.fillStyle = '#5e7c66';
+  ctx.fillRect(door.x, door.y, door.w, door.h);
+  ctx.strokeStyle = '#3f5646';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(door.x + 0.5, door.y + 0.5, door.w - 1, door.h - 1);
+
+  // Stairs pictogram: three steps climbing to the right.
+  if (door.w >= 9) {
+    const step = door.w * 0.18;
+    const px = door.x + door.w * 0.22;
+    const py = door.y + door.h * 0.62;
+    ctx.strokeStyle = '#eef1f4';
+    ctx.lineWidth = Math.max(1, door.w * 0.07);
+    ctx.beginPath();
+    ctx.moveTo(px, py + step);
+    for (let index = 0; index < 3; index += 1) {
+      ctx.lineTo(px + step * index, py + step * (1 - index));
+      ctx.lineTo(px + step * (index + 1), py + step * (1 - index));
+    }
+    ctx.stroke();
+  }
+}
+
+function drawWalkers(ctx, g) {
+  const now = performance.now();
+
+  for (let index = walkers.length - 1; index >= 0; index -= 1) {
+    const walker = walkers[index];
+    if (walker.floor >= g.floors || now - walker.start > WALK_MS) {
+      walkers.splice(index, 1);
+      continue;
+    }
+    if (now < walker.start) continue;
+
+    const progress = (now - walker.start) / WALK_MS;
+    const door = stairsDoor(g, walker.floor);
+    const fromX = g.landingX + g.landingWidth - 30;
+    const toX = door.x + door.w / 2;
+    const x = fromX + (toX - fromX) * Math.min(1, progress / 0.9);
+    const size = clamp(g.floorHeight * 0.62, 8, 22);
+    const bob = Math.abs(Math.sin(progress * Math.PI * 9)) * Math.max(1, size * 0.08);
+
+    // The walker fades through the door during the last tenth of the walk.
+    ctx.globalAlpha = progress < 0.9 ? 1 : (1 - progress) / 0.1;
+    drawPerson(ctx, x, floorTop(g, walker.floor) + g.floorHeight - 3 - bob, size, walker.color, walker.mine ? COLORS.ink : null);
+    ctx.globalAlpha = 1;
+  }
 }
 
 function frame() {
@@ -1028,6 +1192,11 @@ $('newRunButton').addEventListener('click', async () => {
   form.floorSeconds.value = s.timeToReachTheNextFloorMs / 1000;
   form.doorSeconds.value = s.doorTransitionTimeMs / 1000;
   form.dwellSeconds.value = s.enterAndExitTimeMs / 1000;
+  form.dispatchStrategy.value = s.dispatchStrategy;
+  form.idleParking.value = s.idleParking;
+  form.stairsPatienceSeconds.value = s.stairsPatienceSeconds;
+  form.standbyPowerW.value = s.standbyPowerW;
+  form.motorEfficiency.value = s.motorEfficiency;
   ui.runError.textContent = '';
   ui.runDialog.showModal();
 });
@@ -1051,6 +1220,11 @@ ui.runForm.addEventListener('submit', async (event) => {
     timeToReachTheNextFloorMs: String(Math.round(Number(form.floorSeconds.value) * 1000)),
     doorTransitionTimeMs: String(Math.round(Number(form.doorSeconds.value) * 1000)),
     enterAndExitTimeMs: String(Math.round(Number(form.dwellSeconds.value) * 1000)),
+    dispatchStrategy: form.dispatchStrategy.value,
+    idleParking: form.idleParking.value,
+    stairsPatienceSeconds: form.stairsPatienceSeconds.value || '0',
+    standbyPowerW: form.standbyPowerW.value || '0',
+    motorEfficiency: form.motorEfficiency.value || '0.75',
   };
 
   try {
@@ -1087,6 +1261,307 @@ ui.reportResume.addEventListener('click', () => {
 });
 
 // ---------------------------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------------------------
+// Comparison of strategies
+
+function checkedValues(name) {
+  return [...ui.compareForm.querySelectorAll(`input[name="${name}"]:checked`)].map((input) => input.value);
+}
+
+function cabinCounts() {
+  const text = ui.compareForm.elements.elevators.value.trim();
+  if (!text) return [];
+  return text.split(/[,\s]+/).filter(Boolean);
+}
+
+function updateCompareCount() {
+  const strategies = checkedValues('strategy').length;
+  const parkings = checkedValues('parking').length;
+  const cabins = Math.max(1, cabinCounts().length);
+  const variants = strategies * parkings * cabins;
+  const days = Number(ui.compareForm.elements.numberOfSimulationDays.value) || 1;
+  const startHour = Number(ui.compareForm.elements.dayStartHour.value) || 0;
+  const hours = days * 24 - startHour;
+  const seconds = Math.round(variants * hours * 3600 / maxSpeed) + variants * 2;
+  ui.compareCount.textContent = variants
+    ? `${variants} ${variants === 1 ? 'variant' : 'variants'}, about ${seconds < 120 ? `${seconds} s` : `${Math.round(seconds / 60)} min`} in total.`
+    : 'Choose at least one strategy and one parking rule.';
+}
+
+$('compareButton').addEventListener('click', async () => {
+  await loadConfig();
+  const s = config.settings;
+  const form = ui.compareForm.elements;
+  form.numberOfFloors.value = s.numberOfFloors;
+  form.maxPeople.value = s.maxPeople;
+  form.averageCallsPerDay.value = s.averageCallsPerDay;
+  form.trafficPattern.value = s.trafficPattern;
+  form.numberOfSimulationDays.value = s.numberOfSimulationDays;
+  form.dayStartHour.value = s.dayStartHour;
+  // By default the passengers of the run on screen, so that it can be compared with the variants.
+  form.randomSeed.value = state ? state.run.seed : s.randomSeed;
+  form.elevators.value = String(s.numberOfElevators);
+  ui.compareError.textContent = '';
+  updateCompareCount();
+  ui.compareDialog.showModal();
+});
+
+ui.compareForm.addEventListener('input', updateCompareCount);
+$('compareCancel').addEventListener('click', () => ui.compareDialog.close());
+
+ui.compareForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = ui.compareForm.elements;
+  const strategies = checkedValues('strategy');
+  const parkings = checkedValues('parking');
+  if (!strategies.length || !parkings.length) {
+    ui.compareError.textContent = 'Choose at least one strategy and one parking rule.';
+    return;
+  }
+
+  try {
+    await post('/api/batch', {
+      numberOfFloors: form.numberOfFloors.value,
+      maxPeople: form.maxPeople.value,
+      averageCallsPerDay: form.averageCallsPerDay.value,
+      trafficPattern: form.trafficPattern.value,
+      numberOfSimulationDays: form.numberOfSimulationDays.value,
+      dayStartHour: form.dayStartHour.value,
+      randomSeed: form.randomSeed.value || '0',
+      strategies: strategies.join(','),
+      parkings: parkings.join(','),
+      elevators: cabinCounts().join(','),
+    });
+    ui.compareDialog.close();
+  } catch (error) {
+    ui.compareError.textContent = error.message;
+  }
+});
+
+$('batchCancel').addEventListener('click', () => post('/api/batch/cancel', {}).catch(() => {}));
+
+// ---------------------------------------------------------------------------------------------
+// Results: archive of the completed runs
+
+let archive = [];
+
+// Columns of the table: key, title, format, and for the metrics whether lower is better.
+const COLUMNS = [
+  { key: 'finishedAt', title: 'Finished', text: true },
+  { key: 'strategy', title: 'Strategy', text: true },
+  { key: 'parking', title: 'Idle cabins', text: true },
+  { key: 'elevators', title: 'Cabins' },
+  { key: 'maxPeople', title: 'People/cabin' },
+  { key: 'trips', title: 'Trips' },
+  { key: 'avgWaitMs', title: 'Avg wait', format: (v) => seconds(v), lower: true },
+  { key: 'p95WaitMs', title: '95% wait', format: (v) => seconds(v), lower: true },
+  { key: 'maxWaitMs', title: 'Max wait', format: (v) => seconds(v), lower: true },
+  { key: 'avgJourneyMs', title: 'Avg journey', format: (v) => seconds(v), lower: true },
+  { key: 'stairs', title: 'Stairs', lower: true },
+  { key: 'energyKWh', title: 'Energy', format: (v) => `${v.toFixed(2)} kWh`, lower: true },
+  { key: 'whPerTrip', title: 'Wh/trip', format: (v) => v.toFixed(1), lower: true },
+  { key: 'travelledFloors', title: 'Floors run', lower: true },
+  { key: 'doorCycles', title: 'Door cycles', lower: true },
+];
+
+const CHARTS = [
+  { key: 'avgWaitMs', title: 'Average wait', format: (v) => seconds(v) },
+  { key: 'p95WaitMs', title: '95% of the passengers wait less than', format: (v) => seconds(v) },
+  { key: 'energyKWh', title: 'Energy for the whole run', format: (v) => `${v.toFixed(1)} kWh` },
+  { key: 'stairs', title: 'Took the stairs', format: (v) => String(v) },
+];
+
+function scenarioLabel(run) {
+  const pattern = { Office: 'office', Residential: 'homes', Uniform: 'random trips' }[run.pattern] || run.pattern;
+  return `${run.scenario}: ${run.floors} floors, ${pattern}, ${run.callsPerDay} trips/day, ${run.days} ${run.days === 1 ? 'day' : 'days'} from ${String(Math.floor(run.startHour)).padStart(2, '0')}:${String(Math.round((run.startHour % 1) * 60)).padStart(2, '0')}, seed ${run.seed}`;
+}
+
+function runName(run) {
+  return `${run.strategy}, ${run.parking}, ${run.elevators} cab.`;
+}
+
+async function openRuns(scenario) {
+  try {
+    const response = await fetch('/api/runs', { cache: 'no-store' });
+    archive = (await response.json()).runs;
+  } catch (error) {
+    setHint(error.message, true);
+    return;
+  }
+
+  // Scenarios, most recent first.
+  const scenarios = [];
+  for (const run of [...archive].reverse()) {
+    if (!scenarios.some((item) => item.scenario === run.scenario)) scenarios.push(run);
+  }
+
+  ui.scenarioFilter.replaceChildren(...scenarios.map((run) => {
+    const option = document.createElement('option');
+    option.value = run.scenario;
+    option.textContent = scenarioLabel(run);
+    return option;
+  }));
+
+  const wanted = scenario || (state && scenarios.some((item) => item.scenario === state.run.scenario) ? state.run.scenario : null);
+  if (wanted) ui.scenarioFilter.value = wanted;
+
+  renderRuns();
+  if (!ui.runsDialog.open) ui.runsDialog.showModal();
+}
+
+function renderRuns() {
+  const scenario = ui.scenarioFilter.value;
+  const rows = archive.filter((run) => run.scenario === scenario && (run.clean || ui.showHandsOn.checked));
+  const handsOnHidden = archive.filter((run) => run.scenario === scenario && !run.clean).length;
+
+  if (!archive.length) {
+    ui.scenarioNote.textContent = 'No results yet: a run is saved when its last passenger arrives. Start a comparison to fill this table quickly.';
+  } else {
+    ui.scenarioNote.textContent = `${rows.length} ${rows.length === 1 ? 'run' : 'runs'} with exactly the same passengers` +
+      (handsOnHidden && !ui.showHandsOn.checked ? `, ${handsOnHidden} hands-on ${handsOnHidden === 1 ? 'run' : 'runs'} hidden.` : '.');
+  }
+
+  // Best value of every metric among the rows shown.
+  const best = {};
+  for (const column of COLUMNS.filter((c) => c.lower)) {
+    const values = rows.filter((run) => run.clean).map((run) => run[column.key]);
+    // Only when there is something to choose: a column where every run has the same value has no best.
+    if (values.length > 1 && Math.min(...values) !== Math.max(...values)) best[column.key] = Math.min(...values);
+  }
+
+  const head = document.createElement('tr');
+  for (const column of COLUMNS) {
+    const th = document.createElement('th');
+    th.textContent = column.title;
+    if (column.text) th.className = 'text';
+    head.append(th);
+  }
+  head.append(document.createElement('th'));
+
+  const body = rows.map((run) => {
+    const tr = document.createElement('tr');
+    if (!run.clean) tr.className = 'hands-on';
+    for (const column of COLUMNS) {
+      const td = document.createElement('td');
+      const value = run[column.key];
+      td.textContent = column.format ? column.format(value) : value;
+      if (column.text) td.className = 'text';
+      if (run.clean && best[column.key] !== undefined && value === best[column.key]) td.classList.add('best');
+      tr.append(td);
+    }
+    const action = document.createElement('td');
+    const watch = document.createElement('button');
+    watch.type = 'button';
+    watch.className = 'btn';
+    watch.textContent = 'Watch';
+    watch.title = 'Run this variant again live, at the current speed';
+    watch.addEventListener('click', () => watchRun(run));
+    action.append(watch);
+    tr.append(action);
+    return tr;
+  });
+
+  ui.runsTable.replaceChildren(head, ...body);
+  renderCharts(rows.filter((run) => run.clean));
+}
+
+function renderCharts(rows) {
+  if (rows.length < 2) {
+    ui.runsCharts.replaceChildren();
+    return;
+  }
+
+  const charts = CHARTS.filter((chart) => {
+    const values = rows.map((run) => run[chart.key]);
+    return Math.min(...values) !== Math.max(...values);
+  });
+
+  ui.runsCharts.replaceChildren(...charts.map((chart) => {
+    const box = document.createElement('div');
+    box.className = 'chart';
+    const title = document.createElement('h3');
+    title.textContent = chart.title;
+    const list = document.createElement('ol');
+    const values = rows.map((run) => run[chart.key]);
+    const max = Math.max(...values, 1e-9);
+    const min = Math.min(...values);
+
+    const sorted = [...rows].sort((a, b) => a[chart.key] - b[chart.key]);
+    list.append(...sorted.map((run) => {
+      const item = document.createElement('li');
+      if (run[chart.key] === min) item.className = 'best';
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = runName(run);
+      name.title = runName(run);
+      const bar = document.createElement('span');
+      bar.className = 'bar';
+      const fill = document.createElement('span');
+      fill.style.width = `${Math.max(2, (run[chart.key] / max) * 100)}%`;
+      bar.append(fill);
+      const value = document.createElement('span');
+      value.className = 'value';
+      value.textContent = chart.format(run[chart.key]);
+      item.append(name, bar, value);
+      return item;
+    }));
+
+    box.append(title, list);
+    return box;
+  }));
+}
+
+async function watchRun(run) {
+  try {
+    await post('/api/restart', {
+      numberOfElevators: run.elevators,
+      numberOfFloors: run.floors,
+      maxPeople: run.maxPeople,
+      averageCallsPerDay: run.callsPerDay,
+      trafficPattern: run.pattern,
+      numberOfSimulationDays: run.days,
+      dayStartHour: run.startHour,
+      randomSeed: run.seed,
+      dispatchStrategy: run.strategy,
+      idleParking: run.parking,
+      timeToReachTheNextFloorMs: run.floorMs,
+      doorTransitionTimeMs: run.doorMs,
+      enterAndExitTimeMs: run.dwellMs,
+      stairsPatienceSeconds: run.patienceS,
+      dayDurationSeconds: state ? String(DAY_MS / 1000 / Math.min(state.clock.speed, 360)) : '1440',
+    });
+    ui.runsDialog.close();
+  } catch (error) {
+    ui.scenarioNote.textContent = error.message;
+  }
+}
+
+function exportCsv() {
+  if (!archive.length) return;
+  const keys = Object.keys(archive[0]);
+  const quote = (value) => {
+    const text = String(value);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const lines = [keys.join(','), ...archive.map((run) => keys.map((key) => quote(run[key] ?? '')).join(','))];
+  const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/csv' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'elevator-runs.csv';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+
+$('runsButton').addEventListener('click', () => openRuns(null));
+ui.scenarioFilter.addEventListener('change', renderRuns);
+ui.showHandsOn.addEventListener('change', renderRuns);
+$('runsExport').addEventListener('click', exportCsv);
+$('runsClear').addEventListener('click', async () => {
+  if (!window.confirm('Delete every saved result? This cannot be undone.')) return;
+  await post('/api/runs/clear', {});
+  openRuns(null);
+});
 
 loadConfig().catch(() => { ui.offline.hidden = false; });
 poll();

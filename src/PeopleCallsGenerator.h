@@ -9,9 +9,11 @@
 
 #include "Log.h"
 #include "WorkerThread.h"
+#include "Scenario.h"
 
 #include <atomic>
 #include <memory>
+#include <vector>
 
 class PeopleCallsGenerator final 
 {
@@ -49,7 +51,8 @@ public:
   PeopleCallsGenerator operator=(PeopleCallsGenerator&&) = delete;
 
 public:
-  void StartRandom();
+  // Replays the scenario of the given seed (see Scenario).
+  void StartRandom(unsigned int seed);
   void StartFixed();
 
   void Shutdown();
@@ -57,6 +60,8 @@ public:
   // True when the generator has produced every call it had to produce (or has been stopped).
   bool Finished() const { return m_finished; }
   unsigned int GeneratedCalls() const { return m_generatedCalls; }
+  unsigned int Seed() const { return m_seed; }
+  std::size_t ScheduledCalls() const { return m_schedule.size(); }
 
 private:
   class Management& m_management;
@@ -65,6 +70,8 @@ private:
 
   std::atomic_bool m_finished{ false };
   std::atomic_uint m_generatedCalls{ 0U };
+  unsigned int m_seed{ 0U };
+  std::vector<ScheduledCall> m_schedule;
 
   std::unique_ptr<WorkerThread<PeopleCallsGenerator>> m_generatorThread;
 };

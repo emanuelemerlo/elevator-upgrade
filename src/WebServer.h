@@ -10,6 +10,10 @@
 *                POST /api/wave            kind=morning|lunch|evening|random&count=N
 *                POST /api/elevator        id=A&outOfOrder=true|false
 *                POST /api/restart         new run with the given settings (same names as config.json)
+*                GET  /api/runs            archive of the completed runs (settings, scenario, results)
+*                POST /api/runs/clear      empties the archive
+*                POST /api/batch           comparison: scenario settings plus strategies=..., parkings=..., elevators=...
+*                POST /api/batch/cancel    stops the comparison after the current variant
 *      Author: Emanuele Merlo (emanuele.merlo@gmail.com)
 *       Notes: Based on cpp-httplib (third_party/cpp-httplib, MIT license).
 **********************************************************************************/

@@ -128,6 +128,25 @@ public:
     ++m_evacuations;
   }
 
+  // How long the passenger is willing to wait before taking the stairs (simulated ms, 0 = forever).
+  void SetPatience(const long long patienceMs)
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_patienceMs = patienceMs;
+  }
+
+  long long GetPatience() const
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_patienceMs;
+  }
+
+  bool HasLostPatience(const long long nowMs) const
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_patienceMs > 0 && nowMs - m_queuedMs >= m_patienceMs;
+  }
+
   unsigned int GetEvacuations() const
   {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -169,5 +188,6 @@ private:
   long long m_queuedMs{ SimulationClock::Now() };
   bool m_boarded{ false };
   unsigned int m_evacuations{ 0U };
+  long long m_patienceMs{ 0 };
 };
 

@@ -51,11 +51,21 @@ public:
   // Calls waiting for a cabin with enough capacity (or for a cabin in service).
   std::size_t PendingCallsCount() const;
 
+  struct EnergyTotals
+  {
+    double travelWh{ 0.0 };    // motors and doors of every cabin
+    double standbyWh{ 0.0 };   // standby power of every cabin since the start of the run
+    double TotalWh() const { return travelWh + standbyWh; }
+  };
+
+  EnergyTotals GetEnergy() const;
+
   std::vector<ElevatorSnapshot> GetElevatorSnapshots() const;
 
 private:
   void EnqueuePendingCall(const std::shared_ptr<class Call>& call);
   void RequestPendingRetry();
+  void SendImpatientToTheStairs();
 
 private:
   std::vector<std::unique_ptr<class Elevator>> m_elevators;

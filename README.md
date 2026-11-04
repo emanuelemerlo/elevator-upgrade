@@ -1,8 +1,10 @@
 # elevator playground
 
 A fork of [elevator](https://github.com/emanuelemerlo/elevator) that keeps its C++ simulation (threads, dispatcher,
-statistics, console dashboard) and adds a browser interface to play with it: the building runs through a simulated
-day, you can call lifts yourself, send waves of people, put cabins out of order and start new runs with other settings.
+statistics, console dashboard) and adds a browser interface to watch it and poke at it: the building runs through a
+simulated day, you can call lifts yourself, send waves of people, put cabins out of order. It stays a simulation:
+the point is to compare dispatch strategies and building configurations on exactly the same passengers, with waits,
+energy and the people who gave up and took the stairs.
 
 ```sh
 make
@@ -10,7 +12,8 @@ make
 ./Elevator.exe              # the original console simulation
 ```
 
-See [Web interface](#web-interface) and [Simulated day](#simulated-day) below; the rest of this file is the
+See [Web interface](#web-interface), [Comparing strategies](#comparing-strategies), [Energy](#energy) and
+[Simulated day](#simulated-day) below; the rest of this file is the
 documentation of the original project, updated where the fork changed something.
 
 ---
@@ -68,7 +71,9 @@ builds and runs every program in `tests/`:
   capacity, shared stops, anti-starvation weight) and the stop logic of the floors;
 - `SimulationTests.cpp` checks the simulated clock (pause, step, speed changes, abort, no drift at high speed) and whole
   runs at high speed: a run ends by itself with every passenger delivered, a cabin put out of order while travelling
-  stops at the next floor and its passenger completes the trip with another cabin, a restart applies new settings.
+  stops at the next floor and its passenger completes the trip with another cabin, a restart applies new settings,
+  the same seed gives the same passengers, every strategy serves the same scenario and is archived with its energy,
+  idle cabins reach their home floors, impatient passengers take the stairs.
 
 ## Web interface
 
@@ -90,6 +95,8 @@ What you can do:
 | Send a wave of people | Morning rush, lunch break, evening rush or random crowd: the direction of the trips follows the building type |
 | New run | Number of cabins and floors, capacity, trips per day, building type, start hour, length of a day, days, seed, cabin timing |
 | Report | The same final report of the console version, at any moment; it opens by itself when everybody has arrived |
+| Compare strategies | Runs several variants of the same scenario one after the other at full speed (see [Comparing strategies](#comparing-strategies)) |
+| Results | Table and charts of the completed runs of a scenario, CSV export, *Watch* to run a variant again live |
 
 The *Dispatcher* panel shows the last assignment decision with the cost of every cabin (the extra passenger time the
 call adds to its route), so you can see why a cabin has been chosen. *What happened* lists the important events
@@ -106,10 +113,91 @@ The interface uses a small JSON API, handy for scripts too:
 | `POST /api/call` | `from=F&to=T` |
 | `POST /api/wave` | `kind=morning\|lunch\|evening\|random&count=N` |
 | `POST /api/elevator` | `id=A&outOfOrder=true\|false` |
-| `POST /api/restart` | New run; the parameters have the names of `config.json` (`numberOfElevators`, `numberOfFloors`, `dayDurationSeconds`, ...) |
+| `POST /api/restart` | New run; the parameters have the names of `config.json` (`numberOfElevators`, `numberOfFloors`, `dayDurationSeconds`, `dispatchStrategy`, ...) |
+| `GET /api/runs` | Archive of the completed runs: one flat object per run with settings, scenario and results |
+| `POST /api/runs/clear` | Empties the archive |
+| `POST /api/batch` | Comparison: scenario settings (same names as above) plus `strategies=Optimized,Nearest`, `parkings=Stay,Lobby`, `elevators=3,4` |
+| `POST /api/batch/cancel` | Stops the comparison after the current variant |
 
 In web mode the log goes to its file only, from `Warning` up, because hours of simulated traffic at high speed would
 produce a very large file.
+
+## Comparing strategies
+
+### Strategies and idle cabins
+
+`dispatchStrategy` decides which cabin answers a call:
+
+| Strategy | Rule |
+| --- | --- |
+| `Optimized` (default) | The dispatcher of the original project: the route of every cabin is simulated with and without the call, the call goes where it adds the least passenger time (see [Elevator assignment](#elevator-assignment)). |
+| `Nearest` | The closest cabin in service with room for the passenger, whatever it is doing. |
+| `Collective` | The classic directional collective control: the closest among the idle cabins and those already sweeping towards the call in its direction; a cabin that has to turn around first counts as if it were two building heights further away. |
+
+All three respect the cabin capacity and skip the cabins out of order. `idleParking` decides where a cabin with
+nothing to do waits: `Stay` where it stopped, `Lobby` at floor 0, `Spread` at a home floor in the middle of an equal
+zone of the building (4 cabins in 20 floors wait at 2, 7, 12 and 17). A parked cabin answers a call from the floor it
+has reached, so parking costs travel and energy but can shorten the next wait.
+
+### Scenarios
+
+The passengers of a run are decided before it starts, from the seed (`randomSeed`, a new random one when it is 0)
+and the traffic settings: floors, trips per day, building type, days, start hour, call delays, patience. Two runs with
+the same scenario face **exactly the same people at the same simulated times**, whatever their cabins, strategy or
+parking: their results can be compared. Every run shows its scenario key and seed; the archive groups runs by
+scenario.
+
+Calls, waves and faults made by hand make a run *hands-on*: it is still archived, but kept apart from the comparable
+runs (the results table hides it unless asked).
+
+### Comparisons and results
+
+*Compare strategies* takes a scenario (by default the passengers of the run on screen) and a set of variants:
+strategies × idle cabins rules × numbers of cabins, at most 24. The variants run one after the other at the highest
+speed (2000x: a whole day in about 40 seconds) and the results open by themselves at the end. During a comparison
+the interface does not accept commands that would change the runs; you can still watch, change the speed or stop it.
+
+Every run that ends (its last passenger has arrived) is saved in `runs.jsonl` (`runsFilePath`), one JSON object per
+line, read again at the next start. *Results* shows the runs of a scenario with the best value of every column,
+charts of the main metrics and a CSV export of the whole archive. The console version adds its completed runs to the
+same file.
+
+An example on the default building (10 floors, office, 2000 trips per day, 4 cabins, one day from 06:00, same
+scenario for every row):
+
+| Strategy | Idle cabins | Average wait | 95% wait | Took the stairs | Energy | Wh per trip |
+| --- | --- | --- | --- | --- | --- | --- |
+| Optimized | Stay | 7.1 s | 17.9 s | 0 | 59.6 kWh | 33.8 |
+| Optimized | Spread | 4.6 s | 9.9 s | 0 | 78.3 kWh | 44.4 |
+| Optimized | Lobby | 7.9 s | 19.9 s | 0 | 85.4 kWh | 48.5 |
+| Collective | Stay | 9.6 s | 35.0 s | 0 | 57.0 kWh | 32.4 |
+| Nearest | Stay | 11.1 s | 39.8 s | 4 | 56.2 kWh | 32.0 |
+
+Spreading the idle cabins halves the waits of the optimized dispatcher but costs about 30% more energy; sending them
+back to the lobby all day costs even more and does not help an office outside the morning peak.
+
+### The stairs
+
+A small tribute to a classic of the early '90s, where little walkers followed each other in single file: every
+passenger of the scenario has a patience (on average `stairsPatienceSeconds`, between half and one and a half times
+that value; 0 = infinite). Who waits longer gives up, leaves the queue and walks to the door of the stairs at the end
+of the landing, one after the other. They are counted as *took the stairs* in the statistics, the report and the
+comparisons: a strategy that leaves people waiting pays for it. Your own passengers are patient and never give up.
+A cabin that was coming for somebody who left stops at an empty landing, as in real buildings.
+
+## Energy
+
+A simple model of a traction elevator with counterweight (`src/Energy.h`), enough to compare strategies and
+configurations, not to size a real installation:
+
+| Part | Model |
+| --- | --- |
+| Travel | The counterweight balances the empty cabin plus half of the rated load (75 kg per person). Moving one floor (3 m) costs the work to lift the heavier side, divided by `motorEfficiency`, when that side goes up (a full cabin going up, an empty cabin going down), plus 1.5 Wh of friction; otherwise only the friction (no regenerative drive). |
+| Runs and doors | 1 Wh for every start and stop of the motor, 0.15 Wh for every door cycle. |
+| Standby | `standbyPowerW` (default 200 W) for every cabin, for the whole run, in service or not: one more cabin always costs energy, even when idle. |
+
+The interface shows the energy live (hover for travel and standby), the report and the archive keep travel, standby,
+total and energy per delivered trip.
 
 ## Simulated day
 
@@ -122,8 +210,8 @@ be paused or advanced by a step. Every thread waits through the clock, so pausin
 At high speed the operating system timers wake the threads a little late; consecutive waits of the same thread are
 chained on the simulated time line, so these delays do not accumulate (a test checks the drift at 2000x).
 
-The run starts at `dayStartHour` of day 1 and the generator stops at midnight of the last day; the run ends when the
-last passenger has arrived. The intensity of the calls follows the daily profile of the original project (morning,
+The run starts at `dayStartHour` of day 1 and the last passenger of the scenario appears before midnight of the last
+day; the run ends when every passenger has arrived (by lift or by the stairs). The intensity of the calls follows the daily profile of the original project (morning,
 lunch and evening peaks over a base traffic); arrivals are random around that intensity (a Poisson process). With
 `trafficPattern` the peaks also have a direction:
 
@@ -155,6 +243,12 @@ out of range, unknown enum names) stop the program at startup with an explanator
 | `callsGenerator.maxConcurrentCalls` | Maximum number of active calls/passengers in the simulated building. | Use a finite population-like limit such as `600`. When the limit is reached, the generator pauses until passengers complete their trips. |
 | `callsGenerator.numberOfSimulationDays` | How many simulated days the random generator should run. | Use `1` or more. The generator stops at midnight of the last day, or earlier if `numberOfCalls` is reached. |
 | `callsGenerator.trafficPattern` | Who travels when (see [Simulated day](#simulated-day)). | `Office` (default), `Residential` or `Uniform` (random trips, as in the original project). |
+| `callsGenerator.stairsPatienceSeconds` | Average patience of a passenger before taking the stairs, simulated seconds. | Default `120`; every passenger gets between half and one and a half times this value. `0` = nobody ever gives up. |
+| `dispatch.dispatchStrategy` | Which cabin answers a call (see [Comparing strategies](#comparing-strategies)). | `Optimized` (default), `Nearest` or `Collective`. |
+| `dispatch.idleParking` | Where an idle cabin waits. | `Stay` (default), `Lobby` or `Spread`. |
+| `energy.standbyPowerW` | Standby power of every cabin, watts. | Default `200`. |
+| `energy.motorEfficiency` | Efficiency of the motor and gears, 0-1. | Default `0.75`. |
+| `results.runsFilePath` | File of the archive of the completed runs. | Default `runs.jsonl`, next to the program. |
 | `callsGenerator.minDelayBetweenCallsMs` | The shortest wait between two generated calls, in simulated time. | Default `500`. This value must not be higher than `maxDelayBetweenCallsMs`. |
 | `callsGenerator.maxDelayBetweenCallsMs` | The longest wait between two generated calls, in simulated time. | Default `900000` (15 minutes): at night the building is quiet but not dead. |
 | `elevator.timeToReachTheNextFloorMs` | How long an elevator takes to move from one floor to the next. | Time is expressed in milliseconds. Use a value greater than `0`; higher values make elevators slower. |
@@ -310,5 +404,5 @@ The report also includes a cabin sizing recommendation:
 | `Capacity limit waits` | Number of times dispatch had to wait because all cabins were at the configured committed load. |
 
 Possible future improvements:
-- Idle cabins parking (e.g. spread the empty cabins, send them to the lobby before the morning peak)
-- Game layer on top of the web interface: goals, scores, budgets, comparison of dispatching strategies
+- Parking that depends on the hour (e.g. back to the lobby only before the morning peak)
+- Two buildings side by side, live, on the same scenario (needs the global state of the model to become per-run)

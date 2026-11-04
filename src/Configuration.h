@@ -36,6 +36,25 @@ namespace Configuration
     enum class Pattern { Uniform, Office, Residential };
   }
 
+  namespace Dispatch
+  {
+    /**
+     * \brief How a call is given to a cabin.
+     *        Optimized: the route of every cabin is simulated and the call goes where it costs the least passenger time.
+     *        Nearest: the closest cabin in service with room for the passenger, whatever it is doing.
+     *        Collective: the closest cabin among the idle ones and those already heading towards the call in its
+     *                    direction (the classic directional collective control); the closest one otherwise.
+     */
+    enum class Strategy { Optimized, Nearest, Collective };
+
+    /**
+     * \brief Where an idle cabin waits for the next call.
+     *        Stay: where it stopped. Lobby: it goes back to floor 0. Spread: every cabin has a home floor, evenly
+     *        spaced along the building.
+     */
+    enum class Parking { Stay, Lobby, Spread };
+  }
+
   struct Settings
   {
     unsigned int numberOfElevators{ 3 };
@@ -47,6 +66,15 @@ namespace Configuration
     unsigned int maxConcurrentCalls{ 600 };
     unsigned int numberOfSimulationDays{ 1 };
     CallsGenerator::Pattern trafficPattern{ CallsGenerator::Pattern::Office };
+    Dispatch::Strategy dispatchStrategy{ Dispatch::Strategy::Optimized };
+    Dispatch::Parking idleParking{ Dispatch::Parking::Stay };
+    // Average patience of a passenger, in simulated seconds: who has waited longer gives up and takes the stairs.
+    // Every passenger of the scenario gets a patience between half and one and a half times this value. 0 = never.
+    double stairsPatienceSeconds{ 120.0 };
+
+    // Energy model (see Energy.h): standby power of every cabin and efficiency of the motor.
+    double standbyPowerW{ 200.0 };
+    double motorEfficiency{ 0.75 };
     // Delays between two generated calls are drawn from the daily profile, then kept in this range (simulated ms).
     std::chrono::milliseconds minDelayBetweenCalls{ std::chrono::milliseconds(500) };
     std::chrono::milliseconds maxDelayBetweenCalls{ std::chrono::minutes(15) };
@@ -71,6 +99,8 @@ namespace Configuration
     ILog::TraceLevel traceLevel{ ILog::TraceLevel::Verbose };
     ILog::LogType defaultLogType{ ILog::LogType::Screen };
     std::string logFilePath{ "elevator.log" };
+    // Results of the completed runs (one JSON object per line), read again at the next start of the web interface.
+    std::string runsFilePath{ "runs.jsonl" };
   };
 
   bool LoadFromFile(const std::string& path);
@@ -107,6 +137,16 @@ namespace Configuration
     long long MinDelayBetweenCalls();
     long long MaxDelayBetweenCalls();
   }
+
+  namespace Dispatch
+  {
+    Strategy DispatchStrategy();
+    Parking IdleParking();
+    const char* StrategyName(Strategy strategy);
+    const char* ParkingName(Parking parking);
+  }
+
+  const char* PatternName(CallsGenerator::Pattern pattern);
 
   namespace Simulation
   {

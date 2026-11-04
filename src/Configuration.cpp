@@ -128,6 +128,32 @@ namespace
     throw std::invalid_argument("Invalid callsGenerator.trafficPattern value: " + value + " (Uniform, Office or Residential)");
   }
 
+  Configuration::Dispatch::Strategy ParseStrategy(const std::string& value)
+  {
+    const auto normalized = ToLower(value);
+    if (normalized == "optimized")
+      return Configuration::Dispatch::Strategy::Optimized;
+    if (normalized == "nearest")
+      return Configuration::Dispatch::Strategy::Nearest;
+    if (normalized == "collective")
+      return Configuration::Dispatch::Strategy::Collective;
+
+    throw std::invalid_argument("Invalid dispatch.dispatchStrategy value: " + value + " (Optimized, Nearest or Collective)");
+  }
+
+  Configuration::Dispatch::Parking ParseParking(const std::string& value)
+  {
+    const auto normalized = ToLower(value);
+    if (normalized == "stay")
+      return Configuration::Dispatch::Parking::Stay;
+    if (normalized == "lobby")
+      return Configuration::Dispatch::Parking::Lobby;
+    if (normalized == "spread")
+      return Configuration::Dispatch::Parking::Spread;
+
+    throw std::invalid_argument("Invalid dispatch.idleParking value: " + value + " (Stay, Lobby or Spread)");
+  }
+
   ILog::LogType ParseLogType(const std::string& value)
   {
     const auto normalized = ToLower(value);
@@ -179,6 +205,15 @@ void Configuration::Validate(const Settings& settings)
       throw std::invalid_argument("simulation.dayDurationSeconds must be between " +
         std::to_string(static_cast<int>(std::ceil(minDaySeconds))) + " and " + std::to_string(static_cast<int>(maxDaySeconds)) +
         " (real seconds for 24 simulated hours)");
+
+    if (!(settings.stairsPatienceSeconds >= 0.0) || settings.stairsPatienceSeconds > 86400.0)
+      throw std::invalid_argument("callsGenerator.stairsPatienceSeconds must be between 0 (never) and 86400");
+
+    if (!(settings.standbyPowerW >= 0.0) || settings.standbyPowerW > 100000.0)
+      throw std::invalid_argument("energy.standbyPowerW must be between 0 and 100000 watts");
+
+    if (!(settings.motorEfficiency > 0.0) || settings.motorEfficiency > 1.0)
+      throw std::invalid_argument("energy.motorEfficiency must be greater than 0 and at most 1");
 
     if (!(settings.dayStartHour >= 0.0) || settings.dayStartHour >= 24.0)
       throw std::invalid_argument("simulation.dayStartHour must be between 0 and 24 (excluded)");
@@ -237,6 +272,15 @@ void Configuration::ParseJson(const std::string& json, Settings& settings)
   if (FindString(json, "trafficPattern", text))
     settings.trafficPattern = ParseTrafficPattern(text);
 
+  if (FindString(json, "dispatchStrategy", text))
+    settings.dispatchStrategy = ParseStrategy(text);
+
+  if (FindString(json, "idleParking", text))
+    settings.idleParking = ParseParking(text);
+
+  if (FindString(json, "runsFilePath", text))
+    settings.runsFilePath = text;
+
   if (FindUnsigned(json, "minDelayBetweenCallsMs", value))
     settings.minDelayBetweenCalls = std::chrono::milliseconds(value);
 
@@ -256,6 +300,9 @@ void Configuration::ParseJson(const std::string& json, Settings& settings)
     settings.maxPeoplePerElevator = value;
 
   FindDouble(json, "dayDurationSeconds", settings.dayDurationSeconds);
+  FindDouble(json, "stairsPatienceSeconds", settings.stairsPatienceSeconds);
+  FindDouble(json, "standbyPowerW", settings.standbyPowerW);
+  FindDouble(json, "motorEfficiency", settings.motorEfficiency);
   FindDouble(json, "dayStartHour", settings.dayStartHour);
 
   if (FindUnsigned(json, "randomSeed", value))
@@ -387,6 +434,49 @@ void Configuration::Log::Override(const ILog::LogType logType, const ILog::Trace
 {
   g_settings.defaultLogType = logType;
   g_settings.traceLevel = std::max(g_settings.traceLevel, minimumLevel);
+}
+
+Configuration::Dispatch::Strategy Configuration::Dispatch::DispatchStrategy()
+{
+  return Get().dispatchStrategy;
+}
+
+Configuration::Dispatch::Parking Configuration::Dispatch::IdleParking()
+{
+  return Get().idleParking;
+}
+
+const char* Configuration::Dispatch::StrategyName(const Strategy strategy)
+{
+  switch (strategy)
+  {
+  case Strategy::Nearest: return "Nearest";
+  case Strategy::Collective: return "Collective";
+  case Strategy::Optimized:
+  default: return "Optimized";
+  }
+}
+
+const char* Configuration::Dispatch::ParkingName(const Parking parking)
+{
+  switch (parking)
+  {
+  case Parking::Lobby: return "Lobby";
+  case Parking::Spread: return "Spread";
+  case Parking::Stay:
+  default: return "Stay";
+  }
+}
+
+const char* Configuration::PatternName(const CallsGenerator::Pattern pattern)
+{
+  switch (pattern)
+  {
+  case CallsGenerator::Pattern::Uniform: return "Uniform";
+  case CallsGenerator::Pattern::Residential: return "Residential";
+  case CallsGenerator::Pattern::Office:
+  default: return "Office";
+  }
 }
 
 void Configuration::Simulation::StartClock()

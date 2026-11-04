@@ -15,6 +15,8 @@
 #include "Simulation.h"
 #include "SimulationClock.h"
 #include "Statistics.h"
+#include "RunArchive.h"
+#include "Scenario.h"
 
 #include <chrono>
 #include <functional>
@@ -80,7 +82,7 @@ namespace
     std::cout << "Simulated clock" << std::endl;
 
     SimulationClock::Reset(1000.0, 6 * SimulationClock::HourMs);
-    Check(SimulationClock::TimeOfDayMs() - SimulationClock::Now() == 6 * SimulationClock::HourMs, "the day starts at the configured hour");
+    Check(SimulationClock::StartTimeOfDayMs() == 6 * SimulationClock::HourMs, "the day starts at the configured hour");
 
     auto start = RealClock::now();
     Check(SimulationClock::SleepFor(std::chrono::milliseconds(2000)), "a sleep completes");
@@ -143,9 +145,11 @@ namespace
 
     Check(finished, "the run ends by itself after midnight");
     Check(statistics.queuedCalls > 50U, "the generator produced calls (" + std::to_string(statistics.queuedCalls) + ")");
-    Check(statistics.completedPassengers == statistics.queuedCalls, "every passenger reached the destination");
+    Check(statistics.completedPassengers + statistics.abandonedCalls == statistics.queuedCalls,
+      "every passenger reached the destination, by lift or by the stairs");
     Check(statistics.requeuedCalls == 0U, "no boarding refused by a full cabin");
-    Check(Configuration::Simulation::Completed(), "the simulated clock is past the end of the last day");
+    Check(Configuration::Simulation::Completed() || Configuration::Simulation::CurrentHour() >= 23.0,
+      "the run lasts until the last passengers of the day, close to midnight");
   }
 
   void OutOfOrder()
@@ -274,6 +278,162 @@ namespace
     Check(rejected && simulation.Running(), "invalid settings are rejected and the current run goes on");
     simulation.Stop();
   }
+
+  void Scenarios()
+  {
+    std::cout << "Reproducible scenarios" << std::endl;
+
+    auto settings = BaseSettings();
+    Configuration::Apply(settings);
+
+    const auto first = Scenario::Build(42U);
+    const auto again = Scenario::Build(42U);
+    const auto other = Scenario::Build(43U);
+
+    const auto same = [](const std::vector<ScheduledCall>& a, const std::vector<ScheduledCall>& b)
+    {
+      if (a.size() != b.size())
+        return false;
+      for (std::size_t index = 0U; index < a.size(); ++index)
+        if (a[index].atMs != b[index].atMs || a[index].from != b[index].from || a[index].to != b[index].to ||
+            a[index].patienceMs != b[index].patienceMs)
+          return false;
+      return true;
+    };
+
+    Check(first.size() > 1000U, "a day of an office produces the expected number of calls (" + std::to_string(first.size()) + ")");
+    Check(same(first, again), "the same seed gives exactly the same passengers");
+    Check(!same(first, other), "another seed gives other passengers");
+
+    // Morning in an office: most trips start from the lobby.
+    std::size_t morning = 0U;
+    std::size_t fromLobby = 0U;
+    for (const auto& call : first)
+    {
+      const auto hour = 6.0 + static_cast<double>(call.atMs) / SimulationClock::HourMs;
+      if (hour >= 7.5 && hour <= 9.0)
+      {
+        ++morning;
+        fromLobby += call.from == 0U ? 1U : 0U;
+      }
+    }
+    Check(morning > 0U && fromLobby * 2U > morning, "in the office morning most passengers start from the lobby");
+
+    const auto key = Scenario::Key(42U);
+    settings.numberOfElevators = 6;
+    settings.dispatchStrategy = Configuration::Dispatch::Strategy::Nearest;
+    Configuration::Apply(settings);
+    Check(Scenario::Key(42U) == key, "cabins and strategy do not change the scenario");
+
+    settings.numberOfFloors = 12;
+    Configuration::Apply(settings);
+    Check(Scenario::Key(42U) != key, "the floors change the scenario");
+  }
+
+  void Strategies()
+  {
+    std::cout << "Every strategy on the same scenario (1 simulated hour at 2000x)" << std::endl;
+
+    using Strategy = Configuration::Dispatch::Strategy;
+    const Strategy strategies[] = { Strategy::Optimized, Strategy::Nearest, Strategy::Collective };
+
+    const auto archived = RunArchive::All().size();
+    std::vector<std::uint64_t> trips;
+
+    for (const auto strategy : strategies)
+    {
+      auto settings = BaseSettings();
+      settings.dayStartHour = 8.0;
+      settings.numberOfCalls = 150;
+      settings.averageCallsPerDay = 3000;
+      settings.randomSeed = 77;
+      settings.dispatchStrategy = strategy;
+      Configuration::Apply(settings);
+
+      Simulation simulation;
+      simulation.Start();
+      const auto finished = WaitFor([&simulation]() { simulation.CheckFinished(); return simulation.Archived(); }, std::chrono::seconds(30));
+      const auto statistics = Statistics::GetSnapshot();
+      Management::EnergyTotals energy;
+      {
+        auto lock = simulation.Lock();
+        energy = simulation.GetManagement()->GetEnergy();
+      }
+      simulation.Stop();
+
+      const std::string name = Configuration::Dispatch::StrategyName(strategy);
+      Check(finished, name + ": the run ends and is archived");
+      Check(statistics.completedPassengers + statistics.abandonedCalls == statistics.queuedCalls, name + ": nobody is left behind");
+      Check(energy.travelWh > 0.0 && energy.standbyWh > 0.0, name + ": energy is counted (travel and standby)");
+      trips.push_back(statistics.queuedCalls);
+    }
+
+    Check(trips[0] == 150U && trips[0] == trips[1] && trips[1] == trips[2], "the three strategies served the same 150 passengers");
+    Check(RunArchive::All().size() == archived + 3U, "the three runs are in the archive");
+    Check(RunArchive::All().back().find("\"strategy\":\"Collective\"") != std::string::npos, "the archive records the strategy");
+  }
+
+  void Parking()
+  {
+    std::cout << "Idle cabins spread along the building" << std::endl;
+
+    auto settings = BaseSettings();
+    settings.numberOfFloors = 10;
+    settings.numberOfElevators = 3;
+    settings.numberOfCalls = 1;
+    settings.averageCallsPerDay = 1;
+    settings.maxDelayBetweenCalls = std::chrono::hours(20);
+    settings.idleParking = Configuration::Dispatch::Parking::Spread;
+    Configuration::Apply(settings);
+
+    Simulation simulation;
+    simulation.Start();
+
+    const auto parked = WaitFor([&simulation]()
+      {
+        auto lock = simulation.Lock();
+        const auto cabins = simulation.GetManagement()->GetElevatorSnapshots();
+        return cabins[0].currentFloor == 1U && cabins[1].currentFloor == 5U && cabins[2].currentFloor == 8U &&
+          cabins[2].status == ElevatorStatus::Idle;
+      }, std::chrono::seconds(10));
+
+    Check(parked, "without calls the cabins wait at floors 1, 5 and 8");
+    simulation.Stop();
+  }
+
+  void Stairs()
+  {
+    std::cout << "Passengers who lose their patience take the stairs" << std::endl;
+
+    auto settings = BaseSettings();
+    settings.numberOfElevators = 1;
+    settings.numberOfCalls = 1;
+    settings.averageCallsPerDay = 1;
+    settings.maxDelayBetweenCalls = std::chrono::hours(20);
+    settings.stairsPatienceSeconds = 30.0;
+    settings.dayDurationSeconds = 864.0;   // 100x
+    Configuration::Apply(settings);
+
+    Simulation simulation;
+    simulation.Start();
+    simulation.SetOutOfOrder("A", true);
+
+    const auto added = simulation.AddWave(TrafficProfile::Wave::Random, 6U);
+    const auto patient = simulation.AddCall(2, 5);   // own passengers never give up
+
+    Check(WaitFor([]() { return Statistics::GetSnapshot().abandonedCalls >= 6U; }, std::chrono::seconds(10)),
+      "with the only cabin out of order the " + std::to_string(added) + " passengers of the wave take the stairs");
+    // The scenario of the run has one passenger of its own, who also finds no cabin.
+    WaitFor([&simulation, added]() { return Statistics::GetSnapshot().abandonedCalls == added + simulation.GeneratedCalls(); }, std::chrono::seconds(5));
+    Check(Statistics::GetSnapshot().abandonedCalls == added + simulation.GeneratedCalls(), "exactly the passengers without a cabin");
+
+    bool stillWaiting = false;
+    for (const auto& person : Floors::GetPeople().Snapshot())
+      stillWaiting = stillWaiting || person == patient;
+    Check(stillWaiting, "your own passenger keeps waiting");
+
+    simulation.Stop();
+  }
 }
 
 int main()
@@ -282,6 +442,10 @@ int main()
   WholeRun();
   OutOfOrder();
   Restart();
+  Scenarios();
+  Strategies();
+  Parking();
+  Stairs();
 
   LogBase::FlushPendingMessages();
 

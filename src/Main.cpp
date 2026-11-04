@@ -3,6 +3,7 @@
 #include "Simulation.h"
 #include "SimulationClock.h"
 #include "WebServer.h"
+#include "RunArchive.h"
 #include "Log.h"
 #include "LogBase.h"
 #include "Statistics.h"
@@ -149,6 +150,10 @@ namespace
     const auto completed = WaitForEndOfSimulation(stopSignal, simulation);
     log.Trace(completed ? "Simulation completed: all calls served, shutting down..." : "Shutdown requested...");
 
+    // A completed run is added to the archive of the results, the same one of the web interface.
+    if (completed)
+      simulation.CheckFinished();
+
     symbolicInterface.Stop();
     simulation.Stop();
     simulation.GetManagement()->TraceStatistics();
@@ -201,6 +206,7 @@ int main(int argc, char* argv[])
     }
 
     Configuration::LoadFromFile(commandLine.configPath);
+    RunArchive::Load(Configuration::Get().runsFilePath);
   }
   catch(std::exception& e)
   {

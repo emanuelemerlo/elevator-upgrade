@@ -70,6 +70,7 @@ struct ElevatorSnapshot
   std::uint64_t travelledFloors{ 0U };
   std::uint64_t runs{ 0U };
   std::uint64_t doorCycles{ 0U };
+  double travelEnergyWh{ 0.0 };        // motor and doors (standby excluded, see Energy.h)
 };
 
 // Consistent view of a cabin used by the dispatcher to predict its route.
@@ -109,6 +110,10 @@ public:
   // Puts the cabin out of service (it stops at the next floor, lets everybody out and gives its passengers
   // back to the dispatcher) or back into service. The dispatcher stops considering it immediately.
   void SetOutOfOrder(bool outOfOrder);
+
+  // Floor where the cabin waits when it has nothing to do (InvalidFloor: it stays where it stopped).
+  // Setting it wakes an idle cabin up, so that it goes there at once.
+  void SetHomeFloor(Floors::FloorNumber floor);
   bool IsOutOfOrder() const { return m_outOfOrderRequested.load(); }
 
   void SetId(std::string id);
@@ -135,6 +140,7 @@ public:
   std::uint64_t GetTotalFloorsTravelled() const { return m_totalFloorsTravelled.load(); }
   std::uint64_t GetRunCounter() const { return m_runCounter.load(); }
   std::uint64_t GetDoorCycles() const { return m_doorCycles.load(); }
+  double GetTravelEnergyWh() const { return static_cast<double>(m_energyMilliWh.load()) / 1000.0; }
 
 private:
   bool OpenDoors();
@@ -146,6 +152,9 @@ private:
 
   void RestoreDestinationStops();
   void HandleOutOfOrder();
+  void ParkIfIdle();
+  void AddEnergy(double wh);
+  void AddTravelEnergy(Direction direction);
   bool StopRequested() const;
 
 private:
@@ -168,6 +177,7 @@ private:
   std::atomic<Floors::FloorNumber> m_motionToFloor{ Floors::InvalidFloor };
   std::atomic<long long> m_motionStartMs{ 0 };
   std::atomic_bool m_outOfOrderRequested{ false };
+  std::atomic<Floors::FloorNumber> m_homeFloor{ Floors::InvalidFloor };
 
   // m_callPending is the wake-up predicate of m_go: it is written under m_goMutex so that a
   // call assigned while the thread is busy (or not yet waiting) is never lost.
@@ -185,6 +195,7 @@ private:
   std::atomic<std::uint64_t> m_totalFloorsTravelled{ 0U };
   std::atomic<std::uint64_t> m_runCounter{ 0U };
   std::atomic<std::uint64_t> m_doorCycles{ 0U };
+  std::atomic<std::uint64_t> m_energyMilliWh{ 0U };
 
   std::function<void(const std::shared_ptr<Call>&)> m_refusedCallHandler;
   std::function<void()> m_capacityFreedHandler;

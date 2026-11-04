@@ -3,6 +3,9 @@
   "numberOfFloors": 10,
   "type": "Random",
   "trafficPattern": "Office",
+  "dispatchStrategy": "Optimized",
+  "idleParking": "Stay",
+  "stairsPatienceSeconds": 120,
   "numberOfCalls": 4294967295,
   "averageCallsPerDay": 2000,
   "maxConcurrentCalls": 200,
@@ -15,9 +18,12 @@
   "enterAndExitTimeMs": 3000,
   "doorTransitionTimeMs": 1500,
   "maxPeople": 12,
+  "standbyPowerW": 200,
+  "motorEfficiency": 0.75,
   "randomSeed": 0,
   "autoStop": true,
   "traceLevel": "Info",
   "defaultLogType": "Screen",
-  "filePath": "elevator.log"
+  "filePath": "elevator.log",
+  "runsFilePath": "runs.jsonl"
 }

@@ -35,7 +35,8 @@ struct StatisticsSnapshot
   std::uint64_t maxCommittedElevatorLoad{ 0U };
   std::uint64_t totalJourneyTimeMs{ 0U };   // call creation -> arrival at destination
   std::uint64_t maxJourneyTimeMs{ 0U };
-  std::uint64_t requeuedCalls{ 0U };        // calls sent back to the dispatcher (e.g. boarding refused by a full cabin)
+  std::uint64_t requeuedCalls{ 0U };
+  std::uint64_t abandonedCalls{ 0U };      // passengers who gave up waiting and took the stairs        // calls sent back to the dispatcher (e.g. boarding refused by a full cabin)
   std::uint64_t totalAssignmentTimeUs{ 0U };
   std::uint64_t maxAssignmentTimeUs{ 0U };
   std::vector<ElevatorAssignmentStatistics> elevatorAssignments;
@@ -66,6 +67,7 @@ namespace Statistics
   void RecordBoardedPassenger(std::chrono::milliseconds waitTime);
   void RecordCompletedPassenger(std::chrono::milliseconds journeyTime);
   void RecordRequeuedCall();
+  void RecordAbandonedCall();
   // Cheap accessor (no copies) used on hot paths: calls created and not yet completed.
   std::uint64_t ActiveCalls();
   WaitDistribution GetWaitDistribution();

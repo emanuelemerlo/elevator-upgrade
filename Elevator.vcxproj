@@ -25,6 +25,8 @@
     <ClCompile Include="src\Management.cpp" />
     <ClCompile Include="src\People.cpp" />
     <ClCompile Include="src\PeopleCallsGenerator.cpp" />
+    <ClCompile Include="src\RunArchive.cpp" />
+    <ClCompile Include="src\Scenario.cpp" />
     <ClCompile Include="src\Simulation.cpp" />
     <ClCompile Include="src\SimulationClock.cpp" />
     <ClCompile Include="src\Statistics.cpp" />
@@ -38,6 +40,7 @@
     <ClInclude Include="src\ConsoleView.h" />
     <ClInclude Include="src\Configuration.h" />
     <ClInclude Include="src\Elevator.h" />
+    <ClInclude Include="src\Energy.h" />
     <ClInclude Include="src\EventBus.h" />
     <ClInclude Include="src\Floors.h" />
     <ClInclude Include="src\ILog.h" />
@@ -49,6 +52,8 @@
     <ClInclude Include="src\Management.h" />
     <ClInclude Include="src\People.h" />
     <ClInclude Include="src\PeopleCallsGenerator.h" />
+    <ClInclude Include="src\RunArchive.h" />
+    <ClInclude Include="src\Scenario.h" />
     <ClInclude Include="src\Simulation.h" />
     <ClInclude Include="src\SimulationClock.h" />
     <ClInclude Include="src\Statistics.h" />

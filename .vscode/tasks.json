@@ -24,6 +24,8 @@
         "src/Management.cpp",
         "src/People.cpp",
         "src/PeopleCallsGenerator.cpp",
+        "src/RunArchive.cpp",
+        "src/Scenario.cpp",
         "src/Simulation.cpp",
         "src/SimulationClock.cpp",
         "src/Statistics.cpp",

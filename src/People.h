@@ -35,6 +35,8 @@ public:
   // Unassigns the waiting passengers assigned to the given elevator and returns them, atomically.
   std::vector<std::shared_ptr<Call>> ReleaseAssigned(const std::string& elevatorId);
   void Clear();
+  // Removes and returns the waiting passengers whose patience is over (they take the stairs).
+  std::vector<std::shared_ptr<Call>> RemoveImpatient(long long nowMs);
 
   void EnterAndExit(
     People& waitingPeople, 

@@ -137,12 +137,17 @@ void Statistics::RecordRequeuedCall()
   ++g_statistics.requeuedCalls;
 }
 
+void Statistics::RecordAbandonedCall()
+{
+  std::lock_guard<std::mutex> lock(g_mutex);
+  ++g_statistics.abandonedCalls;
+}
+
 std::uint64_t Statistics::ActiveCalls()
 {
   std::lock_guard<std::mutex> lock(g_mutex);
-  return g_statistics.queuedCalls > g_statistics.completedPassengers
-    ? g_statistics.queuedCalls - g_statistics.completedPassengers
-    : 0U;
+  const auto closed = g_statistics.completedPassengers + g_statistics.abandonedCalls;
+  return g_statistics.queuedCalls > closed ? g_statistics.queuedCalls - closed : 0U;
 }
 
 WaitDistribution Statistics::GetWaitDistribution()

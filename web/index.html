@@ -46,6 +46,10 @@
     <section class="stage" aria-label="Building">
       <canvas id="building" role="img" aria-label="Cross-section of the building with the elevator cabins"></canvas>
       <p class="hint" id="hint">Click a floor to call a lift, then the floor to go to. Click a cabin to put it out of order.</p>
+      <div class="batch-banner" id="batchBanner" hidden>
+        <span id="batchText"></span>
+        <button type="button" class="btn" id="batchCancel">Stop comparison</button>
+      </div>
       <div class="offline" id="offline" hidden>
         <strong>The simulation is not answering.</strong>
         <span>Check that <code>Elevator.exe --web</code> is still running; this page reconnects by itself.</span>
@@ -55,6 +59,7 @@
     <aside class="console" aria-label="Control panel">
       <section class="panel">
         <h2>Right now</h2>
+        <p class="run-info" id="runInfo"></p>
         <dl class="numbers">
           <div><dt>Waiting</dt><dd id="statWaiting">0</dd></div>
           <div><dt>Riding</dt><dd id="statRiding">0</dd></div>
@@ -62,6 +67,9 @@
           <div><dt>Average wait</dt><dd id="statAvgWait">–</dd></div>
           <div><dt>95% wait less</dt><dd id="statP95Wait">–</dd></div>
           <div><dt>Longest wait</dt><dd id="statMaxWait">–</dd></div>
+          <div><dt>Took the stairs</dt><dd id="statStairs">0</dd></div>
+          <div><dt>Energy</dt><dd id="statEnergy">–</dd></div>
+          <div><dt>Energy per trip</dt><dd id="statWhPerTrip">–</dd></div>
         </dl>
         <canvas id="history" class="history" height="64" aria-label="People waiting over the last hours"></canvas>
         <p class="note" id="historyNote">People waiting, last 3 simulated hours</p>
@@ -71,7 +79,7 @@
         <h2>Dispatcher</h2>
         <p class="note" id="decisionTitle">Waiting for the first call.</p>
         <ol class="decision" id="decision"></ol>
-        <p class="note">Each bar is the extra passenger time the call would add to that cabin's route (waiting counts double). The shortest bar wins.</p>
+        <p class="note" id="decisionNote">Each bar is the extra passenger time the call would add to that cabin's route (waiting counts double). The shortest bar wins.</p>
       </section>
 
       <section class="panel">
@@ -83,8 +91,17 @@
           <button type="button" class="btn" data-wave="random">Random crowd</button>
         </div>
         <label class="inline">People per wave <input type="number" id="waveCount" min="1" max="500" value="30"></label>
-        <div class="actions">
-          <button type="button" class="btn btn-primary" id="newRunButton">New run…</button>
+        <p class="note">Your calls, waves and faults make the run "hands-on": it is kept apart from the comparable ones.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Runs and comparisons</h2>
+        <div class="actions actions-start">
+          <button type="button" class="btn btn-primary" id="compareButton">Compare strategies…</button>
+          <button type="button" class="btn" id="runsButton">Results</button>
+        </div>
+        <div class="actions actions-start">
+          <button type="button" class="btn" id="newRunButton">New run…</button>
           <button type="button" class="btn" id="reportButton">Report</button>
         </div>
       </section>
@@ -119,19 +136,100 @@
         <label>Start at hour <input type="number" name="dayStartHour" min="0" max="23.5" step="0.5" required></label>
         <label>A day lasts (minutes) <input type="number" name="dayMinutes" min="0.75" max="14400" step="0.25" required></label>
         <label>Seed (0 = random) <input type="number" name="randomSeed" min="0" max="999999999"></label>
+        <label>Dispatch strategy
+          <select name="dispatchStrategy">
+            <option value="Optimized">Optimized: least passenger time</option>
+            <option value="Nearest">Nearest cabin</option>
+            <option value="Collective">Collective: nearest on the way</option>
+          </select>
+        </label>
+        <label>Idle cabins
+          <select name="idleParking">
+            <option value="Stay">Stay where they stop</option>
+            <option value="Lobby">Go back to the lobby</option>
+            <option value="Spread">Spread along the building</option>
+          </select>
+        </label>
+        <label>Patience before the stairs (s, 0 = never) <input type="number" name="stairsPatienceSeconds" min="0" max="86400" step="10"></label>
       </div>
       <details>
-        <summary>Cabin timing</summary>
+        <summary>Cabin timing and energy</summary>
         <div class="form-grid">
           <label>Seconds per floor <input type="number" name="floorSeconds" min="0.1" max="60" step="0.1"></label>
           <label>Door opening (s) <input type="number" name="doorSeconds" min="0" max="60" step="0.1"></label>
           <label>Boarding time (s) <input type="number" name="dwellSeconds" min="0" max="120" step="0.1"></label>
+          <label>Standby power per cabin (W) <input type="number" name="standbyPowerW" min="0" max="100000" step="10"></label>
+          <label>Motor efficiency (0-1) <input type="number" name="motorEfficiency" min="0.05" max="1" step="0.05"></label>
         </div>
       </details>
       <p class="error" id="runError" role="alert"></p>
       <div class="actions">
         <button type="button" class="btn" value="cancel" id="runCancel">Cancel</button>
         <button type="submit" class="btn btn-primary" value="start">Start new run</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="compareDialog" aria-labelledby="compareTitle">
+    <form method="dialog" id="compareForm">
+      <h2 id="compareTitle">Compare strategies</h2>
+      <p class="note">Every variant gets exactly the same passengers (same seed and traffic) and runs at full speed, one after the other: about half a minute per simulated day. Cabin timing, patience and energy come from the current settings.</p>
+      <div class="form-grid">
+        <label>Floors <input type="number" name="numberOfFloors" min="2" max="60" required></label>
+        <label>People per cabin <input type="number" name="maxPeople" min="1" max="60" required></label>
+        <label>Trips per day <input type="number" name="averageCallsPerDay" min="1" max="200000" required></label>
+        <label>Building
+          <select name="trafficPattern">
+            <option value="Office">Office</option>
+            <option value="Residential">Homes</option>
+            <option value="Uniform">Random trips</option>
+          </select>
+        </label>
+        <label>Days <input type="number" name="numberOfSimulationDays" min="1" max="7" required></label>
+        <label>Start at hour <input type="number" name="dayStartHour" min="0" max="23.5" step="0.5" required></label>
+        <label>Seed (0 = new scenario) <input type="number" name="randomSeed" min="0" max="999999999"></label>
+      </div>
+      <fieldset>
+        <legend>Strategies</legend>
+        <label><input type="checkbox" name="strategy" value="Optimized" checked> Optimized</label>
+        <label><input type="checkbox" name="strategy" value="Nearest" checked> Nearest</label>
+        <label><input type="checkbox" name="strategy" value="Collective" checked> Collective</label>
+      </fieldset>
+      <fieldset>
+        <legend>Idle cabins</legend>
+        <label><input type="checkbox" name="parking" value="Stay" checked> Stay</label>
+        <label><input type="checkbox" name="parking" value="Lobby"> Lobby</label>
+        <label><input type="checkbox" name="parking" value="Spread"> Spread</label>
+      </fieldset>
+      <label class="inline">Numbers of cabins <input type="text" name="elevators" placeholder="3, 4, 5" class="wide"></label>
+      <p class="note" id="compareCount"></p>
+      <p class="error" id="compareError" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="btn" id="compareCancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Run comparison</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="runsDialog" aria-labelledby="runsTitle" class="runs-dialog">
+    <form method="dialog">
+      <h2 id="runsTitle">Results</h2>
+      <div class="runs-tools">
+        <label class="inline">Scenario
+          <select id="scenarioFilter"></select>
+        </label>
+        <label class="inline small"><input type="checkbox" id="showHandsOn"> include hands-on runs</label>
+      </div>
+      <p class="note" id="scenarioNote"></p>
+      <div class="charts" id="runsCharts"></div>
+      <div class="table-wrap">
+        <table class="runs" id="runsTable"></table>
+      </div>
+      <p class="note">Best value of each column in green. Energy = motors and doors plus the standby power of every cabin for the whole run.</p>
+      <div class="actions">
+        <button type="button" class="btn" id="runsClear">Clear all results</button>
+        <button type="button" class="btn" id="runsExport">Export CSV</button>
+        <button type="submit" class="btn btn-primary">Close</button>
       </div>
     </form>
   </dialog>

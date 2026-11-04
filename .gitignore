@@ -50,3 +50,7 @@ Elevator.run
 # Build output of the makefile
 obj/
 tests_config.json
+
+# Results archive of the runs (local to every installation)
+runs.jsonl
+simulation_tests.log

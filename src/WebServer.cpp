@@ -12,6 +12,8 @@
 #include "SimulationClock.h"
 #include "Statistics.h"
 #include "TrafficProfile.h"
+#include "RunArchive.h"
+#include "Scenario.h"
 
 // cpp-httplib is third party code: it is compiled without the warnings of the project (Visual Studio uses /W4 /WX).
 #ifdef _MSC_VER
@@ -65,17 +67,6 @@ namespace
     case DoorsMotion::Closing: return "closing";
     case DoorsMotion::None:
     default: return elevator.doorsOpen ? "open" : "closed";
-    }
-  }
-
-  const char* PatternName(const Configuration::CallsGenerator::Pattern pattern)
-  {
-    switch (pattern)
-    {
-    case Configuration::CallsGenerator::Pattern::Uniform: return "Uniform";
-    case Configuration::CallsGenerator::Pattern::Residential: return "Residential";
-    case Configuration::CallsGenerator::Pattern::Office:
-    default: return "Office";
     }
   }
 
@@ -135,6 +126,27 @@ namespace
       .Add("finished", simulation.Finished());
   }
 
+  Json::Writer RunJson(Simulation& simulation)
+  {
+    const auto batch = simulation.GetBatchStatus();
+
+    auto batchJson = Json::Writer::Object();
+    batchJson.Add("running", batch.running);
+    if (!batch.id.empty())
+      batchJson.Add("id", batch.id)
+        .Add("index", static_cast<unsigned long long>(batch.index))
+        .Add("total", static_cast<unsigned long long>(batch.total))
+        .Add("label", batch.label);
+
+    return Json::Writer::Object()
+      .Add("seed", simulation.Seed())
+      .Add("scenario", simulation.ScenarioKey())
+      .Add("interventions", simulation.Interventions())
+      .Add("strategy", Configuration::Dispatch::StrategyName(Configuration::Dispatch::DispatchStrategy()))
+      .Add("parking", Configuration::Dispatch::ParkingName(Configuration::Dispatch::IdleParking()))
+      .Add("batch", batchJson);
+  }
+
   Json::Writer BuildingJson()
   {
     return Json::Writer::Object()
@@ -144,7 +156,8 @@ namespace
       .Add("floorMs", static_cast<long long>(Configuration::Elevator::TimeToReachTheNextFloor().count()))
       .Add("doorMs", static_cast<long long>(Configuration::Elevator::DoorTransitionTime().count()))
       .Add("dwellMs", static_cast<long long>(Configuration::Elevator::EnterAndExitTime().count()))
-      .Add("pattern", PatternName(Configuration::CallsGenerator::TrafficPattern()));
+      .Add("pattern", Configuration::PatternName(Configuration::CallsGenerator::TrafficPattern()))
+      .Add("patienceS", Configuration::Get().stairsPatienceSeconds, 0);
   }
 
   Json::Writer ElevatorJson(const ElevatorSnapshot& elevator)
@@ -182,7 +195,8 @@ namespace
       .Add("stops", stops)
       .Add("travelledFloors", static_cast<unsigned long long>(elevator.travelledFloors))
       .Add("runs", static_cast<unsigned long long>(elevator.runs))
-      .Add("doorCycles", static_cast<unsigned long long>(elevator.doorCycles));
+      .Add("doorCycles", static_cast<unsigned long long>(elevator.doorCycles))
+      .Add("travelWh", elevator.travelEnergyWh, 1);
 
     return json;
   }
@@ -197,7 +211,13 @@ namespace
     for (const auto& item : statistics.elevatorAssignments)
       assignments.Add(item.elevatorId, static_cast<unsigned long long>(item.assignedCalls));
 
+    const auto energy = management == nullptr ? Management::EnergyTotals() : management->GetEnergy();
+
     return Json::Writer::Object()
+      .Add("travelWh", energy.travelWh, 1)
+      .Add("standbyWh", energy.standbyWh, 1)
+      .Add("energyWh", energy.TotalWh(), 1)
+      .Add("whPerTrip", statistics.completedPassengers == 0U ? 0.0 : energy.TotalWh() / static_cast<double>(statistics.completedPassengers), 2)
       .Add("queued", static_cast<unsigned long long>(statistics.queuedCalls))
       .Add("assigned", static_cast<unsigned long long>(statistics.assignedCalls))
       .Add("boarded", static_cast<unsigned long long>(statistics.boardedPassengers))
@@ -213,15 +233,14 @@ namespace
       .Add("avgJourneyMs", statistics.AverageJourneyTimeMs(), 0)
       .Add("maxJourneyMs", static_cast<unsigned long long>(statistics.maxJourneyTimeMs))
       .Add("requeued", static_cast<unsigned long long>(statistics.requeuedCalls))
+      .Add("stairs", static_cast<unsigned long long>(statistics.abandonedCalls))
       .Add("capacityLimited", static_cast<unsigned long long>(statistics.capacityLimitedDecisions))
       .Add("peakCabinPeople", static_cast<unsigned long long>(statistics.maxCabinPeople))
       .Add("assignedByElevator", assignments);
   }
 
-  Json::Writer SettingsJson()
+  Json::Writer SettingsJson(const Configuration::Settings& settings)
   {
-    const auto& settings = Configuration::Get();
-
     return Json::Writer::Object()
       .Add("numberOfElevators", settings.numberOfElevators)
       .Add("numberOfFloors", settings.numberOfFloors)
@@ -229,13 +248,92 @@ namespace
       .Add("averageCallsPerDay", settings.averageCallsPerDay)
       .Add("maxConcurrentCalls", settings.maxConcurrentCalls)
       .Add("numberOfSimulationDays", settings.numberOfSimulationDays)
-      .Add("trafficPattern", PatternName(settings.trafficPattern))
+      .Add("trafficPattern", Configuration::PatternName(settings.trafficPattern))
+      .Add("dispatchStrategy", Configuration::Dispatch::StrategyName(settings.dispatchStrategy))
+      .Add("idleParking", Configuration::Dispatch::ParkingName(settings.idleParking))
+      .Add("stairsPatienceSeconds", settings.stairsPatienceSeconds, 0)
+      .Add("standbyPowerW", settings.standbyPowerW, 0)
+      .Add("motorEfficiency", settings.motorEfficiency, 2)
       .Add("dayDurationSeconds", settings.dayDurationSeconds, 1)
       .Add("dayStartHour", settings.dayStartHour, 2)
       .Add("randomSeed", settings.randomSeed)
       .Add("timeToReachTheNextFloorMs", static_cast<long long>(settings.timeToReachTheNextFloor.count()))
       .Add("doorTransitionTimeMs", static_cast<long long>(settings.doorTransitionTime.count()))
       .Add("enterAndExitTimeMs", static_cast<long long>(settings.enterAndExitTime.count()));
+  }
+}
+
+namespace
+{
+  bool IsWord(const std::string& text)
+  {
+    return !text.empty() && text.size() < 32U &&
+      std::all_of(text.begin(), text.end(), [](const unsigned char c) { return std::isalpha(c) != 0; });
+  }
+
+  /**
+   * \brief Reads the settings of a run from the request parameters over 'settings'. The parameters have the names
+   *        of config.json: they are turned into a small JSON text and read by the same parser and validation of the
+   *        configuration file. Only plain numbers and single words are accepted. Throws std::invalid_argument.
+   */
+  void ParseSettings(const httplib::Request& request, Configuration::Settings& settings)
+  {
+    static const char* NumericKeys[] = {
+      "numberOfElevators", "numberOfFloors", "maxPeople", "averageCallsPerDay", "maxConcurrentCalls",
+      "numberOfSimulationDays", "dayDurationSeconds", "dayStartHour", "randomSeed", "stairsPatienceSeconds",
+      "standbyPowerW", "motorEfficiency",
+      "timeToReachTheNextFloorMs", "doorTransitionTimeMs", "enterAndExitTimeMs" };
+
+    static const char* WordKeys[] = { "trafficPattern", "dispatchStrategy", "idleParking" };
+
+    std::string json = "{";
+    for (const auto* key : NumericKeys)
+    {
+      if (!request.has_param(key))
+        continue;
+
+      const auto value = request.get_param_value(key);
+      double number = 0.0;
+      if (!ParseNumber(value, number))
+        throw std::invalid_argument(std::string(key) + " must be a number");
+
+      json += "\"" + std::string(key) + "\": " + value + ", ";
+    }
+
+    for (const auto* key : WordKeys)
+    {
+      if (!request.has_param(key))
+        continue;
+
+      const auto value = request.get_param_value(key);
+      if (!IsWord(value))
+        throw std::invalid_argument(std::string(key) + " must be a single word");
+
+      json += "\"" + std::string(key) + "\": \"" + value + "\", ";
+    }
+
+    json += "\"type\": \"Random\" }";
+    Configuration::ParseJson(json, settings);
+  }
+
+  std::vector<std::string> SplitList(const std::string& text)
+  {
+    std::vector<std::string> items;
+    std::string item;
+    for (const auto character : text + ",")
+    {
+      if (character == ',')
+      {
+        if (!item.empty())
+          items.push_back(item);
+        item.clear();
+      }
+      else if (character != ' ')
+      {
+        item.push_back(character);
+      }
+    }
+    return items;
   }
 }
 
@@ -248,6 +346,8 @@ struct WebServer::Implementation
   // When every passenger of the run has arrived the clock is paused once, so that the run does not keep ticking
   // through empty days while the report is shown; the user can resume it at will.
   void PauseWhenFinished();
+  // Commands that change the run are refused while a comparison is running, so that its runs stay comparable.
+  bool RejectDuringBatch(httplib::Response& response);
 
   std::string StateJson(std::uint64_t sinceSequence);
 
@@ -255,20 +355,21 @@ struct WebServer::Implementation
   std::string webRoot;
   httplib::Server server;
   std::unique_ptr<std::thread> thread;
-  std::atomic_bool finishedNotified{ false };
 };
 
 void WebServer::Implementation::PauseWhenFinished()
 {
-  if (!simulation.Running() || !simulation.Finished())
-    return;
+  // Archives the run (and pauses the clock) the first time its end is seen.
+  simulation.CheckFinished();
+}
 
-  if (finishedNotified.exchange(true))
-    return;
+bool WebServer::Implementation::RejectDuringBatch(httplib::Response& response)
+{
+  if (!simulation.GetBatchStatus().running)
+    return false;
 
-  SimulationClock::Pause();
-  EventBus::Publish("finished", Json::Writer::Object()
-    .Add("completed", static_cast<unsigned long long>(Statistics::GetSnapshot().completedPassengers)));
+  ReplyError(response, "a comparison is running: wait for it to finish or cancel it", 409);
+  return true;
 }
 
 std::string WebServer::Implementation::StateJson(const std::uint64_t sinceSequence)
@@ -298,6 +399,7 @@ std::string WebServer::Implementation::StateJson(const std::uint64_t sinceSequen
 
   return Json::Writer::Object()
     .Add("clock", ClockJson(simulation))
+    .Add("run", RunJson(simulation))
     .Add("building", BuildingJson())
     .Add("elevators", elevators)
     .Add("waiting", waiting)
@@ -329,7 +431,7 @@ void WebServer::Implementation::RegisterRoutes()
       curve.PushNumber(value, 3);
 
     Reply(response, Json::Writer::Object()
-      .Add("settings", SettingsJson())
+      .Add("settings", SettingsJson(simulation.UserSettings()))
       .Add("trafficCurve", curve)
       .Add("minSpeed", SimulationClock::MinSpeed, 1)
       .Add("maxSpeed", SimulationClock::MaxSpeed, 0));
@@ -396,6 +498,9 @@ void WebServer::Implementation::RegisterRoutes()
     if (!ParseUnsigned(request.get_param_value("from"), from) || !ParseUnsigned(request.get_param_value("to"), to))
       return ReplyError(response, "from and to must be floor numbers");
 
+    if (RejectDuringBatch(response))
+      return;
+
     auto lock = simulation.Lock();
 
     if (!Floors::IsValid(from) || !Floors::IsValid(to) || from == to)
@@ -405,7 +510,6 @@ void WebServer::Implementation::RegisterRoutes()
     if (call == nullptr)
       return ReplyError(response, "the simulation is not running", 409);
 
-    finishedNotified = false;
     Reply(response, Json::Writer::Object().Add("id", Id(call)));
   });
 
@@ -427,11 +531,13 @@ void WebServer::Implementation::RegisterRoutes()
     else if (kind != "random")
       return ReplyError(response, "kind must be morning, lunch, evening or random");
 
+    if (RejectDuringBatch(response))
+      return;
+
     const auto added = simulation.AddWave(wave, count);
     if (added == 0U)
       return ReplyError(response, "the simulation is not running", 409);
 
-    finishedNotified = false;
     EventBus::Publish("wave", Json::Writer::Object().Add("kind", kind).Add("count", added));
     Reply(response, Json::Writer::Object().Add("added", added));
   });
@@ -444,6 +550,9 @@ void WebServer::Implementation::RegisterRoutes()
     if (state != "true" && state != "false")
       return ReplyError(response, "outOfOrder must be true or false");
 
+    if (RejectDuringBatch(response))
+      return;
+
     if (!simulation.SetOutOfOrder(id, state == "true"))
       return ReplyError(response, "unknown elevator '" + id + "' or simulation not running", 404);
 
@@ -452,42 +561,13 @@ void WebServer::Implementation::RegisterRoutes()
 
   server.Post("/api/restart", [this](const httplib::Request& request, httplib::Response& response)
   {
-    // The parameters have the names of config.json: they are turned into a small JSON text and read by the
-    // same parser and validation of the configuration file. Only plain numbers and known words are accepted.
-    static const char* NumericKeys[] = {
-      "numberOfElevators", "numberOfFloors", "maxPeople", "averageCallsPerDay", "maxConcurrentCalls",
-      "numberOfSimulationDays", "dayDurationSeconds", "dayStartHour", "randomSeed",
-      "timeToReachTheNextFloorMs", "doorTransitionTimeMs", "enterAndExitTimeMs" };
-
-    std::string json = "{";
-    for (const auto* key : NumericKeys)
-    {
-      if (!request.has_param(key))
-        continue;
-
-      const auto value = request.get_param_value(key);
-      double number = 0.0;
-      if (!ParseNumber(value, number))
-        return ReplyError(response, std::string(key) + " must be a number");
-
-      json += "\"" + std::string(key) + "\": " + value + ", ";
-    }
-
-    if (request.has_param("trafficPattern"))
-    {
-      const auto pattern = request.get_param_value("trafficPattern");
-      if (!std::all_of(pattern.begin(), pattern.end(), [](const unsigned char c) { return std::isalpha(c) != 0; }))
-        return ReplyError(response, "trafficPattern must be Uniform, Office or Residential");
-
-      json += "\"trafficPattern\": \"" + pattern + "\", ";
-    }
-
-    json += "\"type\": \"Random\" }";
+    if (RejectDuringBatch(response))
+      return;
 
     try
     {
-      auto settings = Configuration::Get();
-      Configuration::ParseJson(json, settings);
+      auto settings = simulation.UserSettings();
+      ParseSettings(request, settings);
       simulation.Restart(settings);
     }
     catch (const std::exception& error)
@@ -495,8 +575,85 @@ void WebServer::Implementation::RegisterRoutes()
       return ReplyError(response, error.what());
     }
 
-    finishedNotified = false;
-    Reply(response, Json::Writer::Object().Add("settings", SettingsJson()));
+    Reply(response, Json::Writer::Object().Add("settings", SettingsJson(simulation.UserSettings())));
+  });
+
+  server.Get("/api/runs", [](const httplib::Request&, httplib::Response& response)
+  {
+    auto runs = Json::Writer::Array();
+    for (const auto& record : RunArchive::All())
+      runs.Push(record);
+
+    Reply(response, Json::Writer::Object().Add("runs", runs));
+  });
+
+  server.Post("/api/runs/clear", [](const httplib::Request&, httplib::Response& response)
+  {
+    RunArchive::Clear();
+    Reply(response, Json::Writer::Object().Add("runs", Json::Writer::Array()));
+  });
+
+  server.Post("/api/batch", [this](const httplib::Request& request, httplib::Response& response)
+  {
+    // The scenario (seed, floors, traffic) is the same for every variant; strategies, parking and number of
+    // cabins vary. The variants run one after the other at the highest speed.
+    constexpr std::size_t MaxVariants = 24U;
+
+    try
+    {
+      auto base = simulation.UserSettings();
+      ParseSettings(request, base);
+      base.randomSeed = Scenario::ResolveSeed(base.randomSeed);
+      base.dayDurationSeconds = static_cast<double>(SimulationClock::DayMs) / 1000.0 / SimulationClock::MaxSpeed;
+
+      auto strategies = SplitList(request.get_param_value("strategies"));
+      auto parkings = SplitList(request.get_param_value("parkings"));
+      auto elevators = SplitList(request.get_param_value("elevators"));
+      if (strategies.empty())
+        strategies.push_back(Configuration::Dispatch::StrategyName(base.dispatchStrategy));
+      if (parkings.empty())
+        parkings.push_back(Configuration::Dispatch::ParkingName(base.idleParking));
+      if (elevators.empty())
+        elevators.push_back(std::to_string(base.numberOfElevators));
+
+      if (strategies.size() * parkings.size() * elevators.size() > MaxVariants)
+        throw std::invalid_argument("at most " + std::to_string(MaxVariants) + " variants in one comparison");
+
+      std::vector<Simulation::Variant> variants;
+      for (const auto& count : elevators)
+        for (const auto& strategy : strategies)
+          for (const auto& parking : parkings)
+          {
+            unsigned int cabins = 0U;
+            if (!ParseUnsigned(count, cabins) || !IsWord(strategy) || !IsWord(parking))
+              throw std::invalid_argument("variants must be lists of strategies, parking rules and numbers of cabins");
+
+            Simulation::Variant variant;
+            variant.settings = base;
+            variant.settings.numberOfElevators = cabins;
+            Configuration::ParseJson("{ \"dispatchStrategy\": \"" + strategy + "\", \"idleParking\": \"" + parking + "\" }",
+              variant.settings);
+            variant.label = std::string(Configuration::Dispatch::StrategyName(variant.settings.dispatchStrategy)) + ", " +
+              Configuration::Dispatch::ParkingName(variant.settings.idleParking) + ", " + std::to_string(cabins) + " cabins";
+            variants.push_back(variant);
+          }
+
+      const auto id = simulation.StartBatch(variants);
+      Reply(response, Json::Writer::Object()
+        .Add("batch", id)
+        .Add("variants", static_cast<unsigned long long>(variants.size()))
+        .Add("seed", base.randomSeed));
+    }
+    catch (const std::exception& error)
+    {
+      return ReplyError(response, error.what());
+    }
+  });
+
+  server.Post("/api/batch/cancel", [this](const httplib::Request&, httplib::Response& response)
+  {
+    simulation.CancelBatch();
+    Reply(response, Json::Writer::Object().Add("cancelled", true));
   });
 
   if (!server.set_mount_point("/", webRoot))

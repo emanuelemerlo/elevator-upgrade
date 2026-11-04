@@ -8,6 +8,8 @@
 #include "Configuration.h"
 #include "Statistics.h"
 #include "TrafficProfile.h"
+#include "Scenario.h"
+#include "SimulationClock.h"
 
 #include <random>
 #include <chrono>
@@ -31,23 +33,6 @@ PeopleCallsGenerator::~PeopleCallsGenerator()
 
 namespace
 {
-  // Delay before the next call (simulated time): arrivals are random (exponential, i.e. a Poisson process) around
-  // the average delay of the current hour, which follows the daily profile, then kept in the configured range.
-  std::chrono::milliseconds DelayForDailyProfile(std::default_random_engine& generator)
-  {
-    const auto averageCallsPerDay = static_cast<double>(Configuration::CallsGenerator::AverageCallsPerDay());
-    const auto averageDelayMs = static_cast<double>(SimulationClock::DayMs) / averageCallsPerDay;
-    const auto profiledDelayMs = averageDelayMs / TrafficProfile::Intensity(Configuration::Simulation::CurrentHour());
-
-    std::exponential_distribution<double> arrival(1.0 / profiledDelayMs);
-
-    const long long lowerBound = std::max(1LL, Configuration::CallsGenerator::MinDelayBetweenCalls());
-    const long long upperBound = std::max(lowerBound, Configuration::CallsGenerator::MaxDelayBetweenCalls());
-    const auto delayMs = std::min(static_cast<double>(upperBound), std::max(static_cast<double>(lowerBound), arrival(generator)));
-
-    return std::chrono::milliseconds(static_cast<long long>(delayMs));
-  }
-
   bool MaxConcurrentCallsReached()
   {
     return Statistics::ActiveCalls() >= Configuration::CallsGenerator::MaxConcurrentCalls();
@@ -63,9 +48,14 @@ namespace
   }
 }
 
-void PeopleCallsGenerator::StartRandom()
+void PeopleCallsGenerator::StartRandom(const unsigned int seed)
 {
   m_finished = false;
+
+  // The whole day is decided now: same seed and traffic settings, same passengers at the same times.
+  m_seed = seed;
+  m_schedule = Scenario::Build(seed);
+  m_log.Trace("Scenario seed " + std::to_string(seed) + ": " + std::to_string(m_schedule.size()) + " calls", Log::TraceLevel::Info);
 
   if (m_generatorThread != nullptr && m_generatorThread->IsActive())
     m_generatorThread->Stop();
@@ -103,47 +93,28 @@ void PeopleCallsGenerator::RandomGeneratorThread::CycleFunction(PeopleCallsGener
   if (peopleCallsGenerator == nullptr || StopRequested())
     return;
 
-  if (!Configuration::Simulation::SleepFor(2s)) // arbitrary delay before start, interrupted by an abort
+  for (const auto& scheduled : peopleCallsGenerator->m_schedule)
   {
-    peopleCallsGenerator->m_finished = true;
-    return;
-  }
-
-  // Same seed -> same sequence of calls (floors and delays); the seed is traced to reproduce a run.
-  const auto seed = GeneratorSeed();
-  peopleCallsGenerator->m_log.Trace("Random seed: " + std::to_string(seed), Log::TraceLevel::Info);
-  std::default_random_engine generator(seed);
-
-  const auto pattern = Configuration::CallsGenerator::TrafficPattern();
-
-  const auto maxCalls = Configuration::CallsGenerator::NumberOfCalls();
-  unsigned int generatedCalls = 0U;
-
-  do
-  {
-    if (Configuration::Simulation::Completed())
-    {
-      peopleCallsGenerator->m_log.Trace("Simulation days completed: generator stopped");
+    // Every sleep returns false when the simulation is aborted: the generator must not wait for the next call.
+    if (!SimulationClock::SleepUntil(scheduled.atMs))
       break;
-    }
 
-    if (generatedCalls >= maxCalls)
+    // Safety limit of the building population: the call waits (it keeps its passenger) until there is room.
+    auto aborted = false;
+    while (MaxConcurrentCallsReached() && !StopRequested())
     {
-      peopleCallsGenerator->m_log.Trace("Configured number of calls reached: generator stopped");
-      break;
-    }
-
-    if (MaxConcurrentCallsReached())
-    {
-      if (!Configuration::Simulation::SleepFor(DelayForDailyProfile(generator)))
+      if (!Configuration::Simulation::SleepFor(1s))
+      {
+        aborted = true;
         break;
-
-      continue;
+      }
     }
 
-    // Who travels depends on the hour: arrivals in the morning, departures in the evening (see TrafficProfile).
-    const auto trip = TrafficProfile::PickTrip(generator, Configuration::Simulation::CurrentHour(), pattern);
-    const auto call = std::make_shared<Call>(trip.first, trip.second);
+    if (aborted || StopRequested())
+      break;
+
+    const auto call = std::make_shared<Call>(scheduled.from, scheduled.to);
+    call->SetPatience(scheduled.patienceMs);
 
     peopleCallsGenerator->m_log.Trace("Generated call " + call->ToString());
 
@@ -151,17 +122,11 @@ void PeopleCallsGenerator::RandomGeneratorThread::CycleFunction(PeopleCallsGener
 
     // Assign call synchronously to avoid unbounded thread creation
     peopleCallsGenerator->m_management.AssignCall(call);
-    ++generatedCalls;
     ++peopleCallsGenerator->m_generatedCalls;
+  }
 
-    // The sleep returns false when the simulation is aborted: the generator must not wait for the next call.
-    if (!Configuration::Simulation::SleepFor(DelayForDailyProfile(generator)))
-      break;
-
-  } while (!StopRequested());
-
+  peopleCallsGenerator->m_log.Trace("Scenario completed: generator stopped");
   peopleCallsGenerator->m_finished = true;
-  peopleCallsGenerator->m_log.Trace("CycleFunction exit", ILog::TraceLevel::Debug);
 }
 
 void PeopleCallsGenerator::FixedGeneratorThread::CycleFunction(PeopleCallsGenerator* peopleCallsGenerator)
