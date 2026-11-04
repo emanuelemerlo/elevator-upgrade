@@ -46,3 +46,7 @@ vc141.*
 # Binaries
 Elevator.run
 
+
+# Build output of the makefile
+obj/
+tests_config.json
