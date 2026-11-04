@@ -33,7 +33,8 @@ const ui = {
   statMaxWait: $('statMaxWait'),
   statStairs: $('statStairs'),
   statEnergy: $('statEnergy'),
-  statWhPerTrip: $('statWhPerTrip'),
+  statTransfers: $('statTransfers'),
+  statEnergyLabel: $('statEnergyLabel'),
   runInfo: $('runInfo'),
   decisionNote: $('decisionNote'),
   batchBanner: $('batchBanner'),
@@ -317,6 +318,9 @@ function describe(event) {
       return mine || all || stairsInFeed()
         ? { text: `#${d.id} gave up after ${seconds(d.waitMs)} at floor ${d.floor} and took the stairs.`, cls: mine ? 'mine' : '' }
         : null;
+    case 'transfer':
+      if (!mine && !all) return null;
+      return { text: `#${d.id} changes cabin at floor ${d.floor}, going on to ${d.to}.`, cls: mine ? 'mine' : '' };
     case 'batch':
       return { text: `Comparison, variant ${d.index + 1} of ${d.total}: ${d.label}.` };
     case 'twinFinished':
@@ -380,7 +384,9 @@ function showDecision(event) {
 
   const side = state && state.twin ? `${event.b === 'twin' ? 'Right' : 'Left'}: ` : '';
   ui.decisionTitle.textContent =
-    `${side}${mine ? 'Your call' : `Call #${d.id}`}, floor ${d.from} to ${d.to}: cabin ${d.elevator}, pickup in ${seconds(d.pickupMs)}.`;
+    `${side}${mine ? 'Your call' : `Call #${d.id}`}, floor ${d.from} to ${d.to}` +
+    `${d.finalTo !== undefined && d.finalTo !== d.to ? ` (changing there for ${d.finalTo})` : ''}` +
+    `: cabin ${d.elevator}${d.group ? ` of group ${d.group}` : ''}, pickup in ${seconds(d.pickupMs)}.`;
 
   const optimized = !d.strategy || d.strategy === 'Optimized';
   const scoreOf = (c) => (c.score !== undefined ? c.score : c.costMs);
@@ -490,7 +496,13 @@ function updatePanel() {
   ui.statMaxWait.textContent = stats.boarded ? shortDuration(stats.maxWaitMs) : '–';
   ui.statStairs.textContent = stats.stairs;
   ui.statEnergy.textContent = `${(stats.energyWh / 1000).toFixed(stats.energyWh < 10000 ? 2 : 1)} kWh`;
-  ui.statWhPerTrip.textContent = stats.completed ? `${stats.whPerTrip.toFixed(1)} Wh` : '–';
+  ui.statEnergyLabel.innerHTML = '';
+  ui.statEnergyLabel.append('Energy');
+  const perTrip = document.createElement('small');
+  perTrip.textContent = stats.completed ? `${stats.whPerTrip.toFixed(1)} Wh per trip` : 'per trip: –';
+  ui.statEnergyLabel.append(perTrip);
+  ui.statTransfers.textContent = stats.transfers;
+  ui.statTransfers.title = stats.transfers ? `Average wait at the change: ${seconds(stats.transferWaitMs)}` : '';
   ui.statEnergy.title = `Motors and doors ${(stats.travelWh / 1000).toFixed(2)} kWh, standby ${(stats.standbyWh / 1000).toFixed(2)} kWh`;
 
   updateTwinTable();
@@ -501,7 +513,7 @@ function updatePanel() {
   if (state.twin) {
     ui.runInfo.append(`Same passengers in both buildings: scenario ${run.scenario} (seed ${run.seed}). Green is the better side. `);
   } else {
-    ui.runInfo.append(`${run.strategy} dispatch, ${parking[run.parking] || run.parking}. Scenario ${run.scenario} (seed ${run.seed}). `);
+    ui.runInfo.append(`${layoutLabel(state.building)}, ${run.strategy} dispatch, ${parking[run.parking] || run.parking}. Scenario ${run.scenario} (seed ${run.seed}). `);
   }
   if (run.interventions > 0) {
     const handsOn = document.createElement('span');
@@ -529,7 +541,9 @@ const TWIN_ROWS = [
   { title: 'Average wait', value: (b) => (b.stats.boarded ? b.stats.avgWaitMs : null), format: shortDuration },
   { title: '95% wait less', value: (b) => (b.stats.boarded ? b.stats.p95WaitMs : null), format: shortDuration },
   { title: 'Longest wait', value: (b) => (b.stats.boarded ? b.stats.maxWaitMs : null), format: shortDuration },
+  { title: 'Average journey', value: (b) => (b.stats.completed ? b.stats.avgJourneyMs : null), format: shortDuration },
   { title: 'Took the stairs', value: (b) => b.stats.stairs, format: String },
+  { title: 'Changes of cabin', value: (b) => b.stats.transfers, format: String },
   { title: 'Energy', value: (b) => b.stats.energyWh, format: (v) => `${(v / 1000).toFixed(v < 10000 ? 2 : 1)} kWh` },
   { title: 'Energy per trip', value: (b) => (b.stats.completed ? b.stats.whPerTrip : null), format: (v) => `${v.toFixed(1)} Wh` },
 ];
@@ -675,6 +689,8 @@ const COLORS = {
   door: '#aab4be',
   select: 'rgba(242,169,59,0.35)',
   hover: 'rgba(29,40,51,0.07)',
+  transfer: '#3d6fb6',
+  express: '#14171b',
 };
 
 function waitColor(ms) {
@@ -707,7 +723,8 @@ function floorTop(geometry, position) {
 
 function cabinPosition(elevator, now, building) {
   if (elevator.motionTo === undefined) return elevator.floor;
-  const progress = clamp((now - elevator.motionStartMs) / building.floorMs, 0, 1);
+  const duration = elevator.motionMs > 0 ? elevator.motionMs : building.floorMs;
+  const progress = clamp((now - elevator.motionStartMs) / duration, 0, 1);
   return elevator.floor + (elevator.motionTo - elevator.floor) * progress;
 }
 
@@ -833,9 +850,37 @@ function buildingsOf(current) {
   return entries;
 }
 
+function layoutLabel(building) {
+  const groups = building.groups || [];
+  const zones = groups.filter((group) => group.name && !group.shuttle).length;
+  const shuttles = groups.filter((group) => group.shuttle).length;
+  if (!zones) return `${building.elevators} cabins`;
+  return `${zones} zones${shuttles ? ` + ${shuttles === 1 ? 'sky lobby' : `${shuttles} sky lobbies`}` : ''}, ${building.elevators} cabins`;
+}
+
 function variantLabel(data) {
   const parking = { Stay: 'cabins stay', Lobby: 'back to lobby', Spread: 'spread' }[data.run.parking] || data.run.parking;
-  return `${data.run.strategy}, ${parking}, ${data.building.elevators} cabins of ${data.building.maxPeople}`;
+  return `${data.run.strategy}, ${parking}, ${layoutLabel(data.building)} of ${data.building.maxPeople}`;
+}
+
+// Colours of the groups of cabins of a zoned building (the shuttles are grey).
+const GROUP_COLORS = ['#3d6fb6', '#7a5ea8', '#2f8f83', '#b5653a', '#8a8f2e', '#a8456b'];
+
+function groupColor(building, name) {
+  const groups = (building.groups || []).filter((group) => !group.shuttle);
+  const index = groups.findIndex((group) => group.name === name);
+  if (index >= 0) return GROUP_COLORS[index % GROUP_COLORS.length];
+  return '#6b737c';
+}
+
+function groupOf(building, name) {
+  return (building.groups || []).find((group) => group.name === name);
+}
+
+function servesFloor(group, floor) {
+  if (!group || !group.name) return true;
+  if (floor === group.lobby) return true;
+  return floor >= group.from && floor <= group.to;
 }
 
 function drawOneBuilding(ctx, entry, areaX, areaWidth, height, now, night, twin) {
@@ -915,7 +960,7 @@ function drawOneBuilding(ctx, entry, areaX, areaWidth, height, now, night, twin)
     shown.forEach((person, index) => {
       const px = g.landingX + g.landingWidth - 30 - index * spacing;
       const waited = person.waitMs + Math.max(0, elapsedSinceState);
-      const ring = myCalls.has(person.id) ? COLORS.ink : person.evacuated ? COLORS.fault : null;
+      const ring = myCalls.has(person.id) ? COLORS.ink : person.evacuated ? COLORS.fault : person.transfer ? COLORS.transfer : null;
       drawPerson(ctx, px, y + h - 3, size, waitColor(waited), ring);
     });
     if (people.length > shown.length) {
@@ -946,6 +991,33 @@ function drawOneBuilding(ctx, entry, areaX, areaWidth, height, now, night, twin)
 
     ctx.fillStyle = elevator.outOfOrder ? '#3a2a2a' : COLORS.shaft;
     ctx.fillRect(shaftX, shaftTop, shaftW, shaftBottom - shaftTop);
+
+    // Zoned building: the floors the cabin passes without stopping (express run) are darker, with a dashed centre line.
+    const group = groupOf(b.building, elevator.group);
+    if (group && group.name) {
+      for (let floor = 0; floor < floors; floor += 1) {
+        if (servesFloor(group, floor)) continue;
+        const fy = floorTop(g, floor);
+        ctx.fillStyle = COLORS.express;
+        ctx.fillRect(shaftX, fy, shaftW, g.floorHeight);
+      }
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      for (let floor = 0; floor < floors; floor += 1) {
+        if (servesFloor(group, floor)) continue;
+        const fy = floorTop(g, floor);
+        ctx.moveTo(shaftX + shaftW / 2, fy);
+        ctx.lineTo(shaftX + shaftW / 2, fy + g.floorHeight);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // Colour band of the group on the roof.
+      ctx.fillStyle = groupColor(b.building, elevator.group);
+      ctx.fillRect(g.shaftsX + index * g.shaftWidth, g.top - 12, g.shaftWidth, 4);
+    }
     ctx.fillStyle = COLORS.rail;
     ctx.fillRect(shaftX + 3, shaftTop, 2, shaftBottom - shaftTop);
     ctx.fillRect(shaftX + shaftW - 5, shaftTop, 2, shaftBottom - shaftTop);
@@ -996,8 +1068,8 @@ function drawOneBuilding(ctx, entry, areaX, areaWidth, height, now, night, twin)
     }
 
     // Frame and load bar.
-    ctx.strokeStyle = elevator.outOfOrder ? COLORS.fault : '#5d6875';
-    ctx.lineWidth = elevator.outOfOrder ? 2 : 1;
+    ctx.strokeStyle = elevator.outOfOrder ? COLORS.fault : group && group.name ? groupColor(b.building, elevator.group) : '#5d6875';
+    ctx.lineWidth = elevator.outOfOrder || (group && group.name) ? 2 : 1;
     ctx.strokeRect(cx + 0.5, cy + 0.5, cabinW - 1, cabinH - 1);
     const load = clamp(riders / Math.max(1, maxPeople), 0, 1);
     ctx.fillStyle = load >= 1 ? COLORS.fault : COLORS.lamp;
@@ -1294,7 +1366,8 @@ $('newRunButton').addEventListener('click', async () => {
   await loadConfig();
   const s = config.settings;
   const form = ui.runForm.elements;
-  form.numberOfElevators.value = s.numberOfElevators;
+  form.layout.value = s.layout;
+  form.expressFloorFactor.value = s.expressFloorFactor;
   form.numberOfFloors.value = s.numberOfFloors;
   form.maxPeople.value = s.maxPeople;
   form.averageCallsPerDay.value = s.averageCallsPerDay;
@@ -1323,7 +1396,8 @@ ui.runForm.addEventListener('submit', async (event) => {
   const form = ui.runForm.elements;
 
   const params = {
-    numberOfElevators: form.numberOfElevators.value,
+    layout: form.layout.value,
+    expressFloorFactor: form.expressFloorFactor.value || '0.35',
     numberOfFloors: form.numberOfFloors.value,
     maxPeople: form.maxPeople.value,
     averageCallsPerDay: form.averageCallsPerDay.value,
@@ -1390,16 +1464,14 @@ function checkedValues(name) {
   return [...ui.compareForm.querySelectorAll(`input[name="${name}"]:checked`)].map((input) => input.value);
 }
 
-function cabinCounts() {
-  const text = ui.compareForm.elements.elevators.value.trim();
-  if (!text) return [];
-  return text.split(/[,\s]+/).filter(Boolean);
+function compareLayouts() {
+  return ui.compareForm.elements.layouts.value.split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
 function updateCompareCount() {
   const strategies = checkedValues('strategy').length;
   const parkings = checkedValues('parking').length;
-  const cabins = Math.max(1, cabinCounts().length);
+  const cabins = Math.max(1, compareLayouts().length);
   const variants = strategies * parkings * cabins;
   const days = Number(ui.compareForm.elements.numberOfSimulationDays.value) || 1;
   const startHour = Number(ui.compareForm.elements.dayStartHour.value) || 0;
@@ -1422,7 +1494,7 @@ $('compareButton').addEventListener('click', async () => {
   form.dayStartHour.value = s.dayStartHour;
   // By default the passengers of the run on screen, so that it can be compared with the variants.
   form.randomSeed.value = state ? state.run.seed : s.randomSeed;
-  form.elevators.value = String(s.numberOfElevators);
+  form.layouts.value = s.layout;
   ui.compareError.textContent = '';
   updateCompareCount();
   ui.compareDialog.showModal();
@@ -1452,7 +1524,7 @@ ui.compareForm.addEventListener('submit', async (event) => {
       randomSeed: form.randomSeed.value || '0',
       strategies: strategies.join(','),
       parkings: parkings.join(','),
-      elevators: cabinCounts().join(','),
+      layouts: compareLayouts().join('|'),
     });
     ui.compareDialog.close();
   } catch (error) {
@@ -1475,11 +1547,11 @@ $('twinButton').addEventListener('click', async () => {
   form.randomSeed.value = state ? state.run.seed : s.randomSeed;
   form.leftDispatchStrategy.value = s.dispatchStrategy;
   form.leftIdleParking.value = s.idleParking;
-  form.leftNumberOfElevators.value = s.numberOfElevators;
+  form.leftLayout.value = s.layout;
   form.leftMaxPeople.value = s.maxPeople;
   form.rightDispatchStrategy.value = s.dispatchStrategy === 'Optimized' ? 'Nearest' : 'Optimized';
   form.rightIdleParking.value = s.idleParking;
-  form.rightNumberOfElevators.value = s.numberOfElevators;
+  form.rightLayout.value = s.layout;
   form.rightMaxPeople.value = s.maxPeople;
   ui.twinError.textContent = '';
   ui.twinDialog.showModal();
@@ -1519,7 +1591,7 @@ const COLUMNS = [
   { key: 'finishedAt', title: 'Finished', text: true },
   { key: 'strategy', title: 'Strategy', text: true },
   { key: 'parking', title: 'Idle cabins', text: true },
-  { key: 'elevators', title: 'Cabins' },
+  { key: 'layout', title: 'Cabins and zones', text: true, format: (v, run) => v || String(run.elevators) },
   { key: 'maxPeople', title: 'People/cabin' },
   { key: 'trips', title: 'Trips' },
   { key: 'avgWaitMs', title: 'Avg wait', format: (v) => seconds(v), lower: true },
@@ -1527,6 +1599,7 @@ const COLUMNS = [
   { key: 'maxWaitMs', title: 'Max wait', format: (v) => seconds(v), lower: true },
   { key: 'avgJourneyMs', title: 'Avg journey', format: (v) => seconds(v), lower: true },
   { key: 'stairs', title: 'Stairs', lower: true },
+  { key: 'transfers', title: 'Changes', format: (v) => (v === undefined ? '0' : String(v)) },
   { key: 'energyKWh', title: 'Energy', format: (v) => `${v.toFixed(2)} kWh`, lower: true },
   { key: 'whPerTrip', title: 'Wh/trip', format: (v) => v.toFixed(1), lower: true },
   { key: 'travelledFloors', title: 'Floors run', lower: true },
@@ -1535,6 +1608,7 @@ const COLUMNS = [
 
 const CHARTS = [
   { key: 'avgWaitMs', title: 'Average wait', format: (v) => seconds(v) },
+  { key: 'avgJourneyMs', title: 'Average journey (wait, ride and changes)', format: (v) => seconds(v) },
   { key: 'p95WaitMs', title: '95% of the passengers wait less than', format: (v) => seconds(v) },
   { key: 'energyKWh', title: 'Energy for the whole run', format: (v) => `${v.toFixed(1)} kWh` },
   { key: 'stairs', title: 'Took the stairs', format: (v) => String(v) },
@@ -1546,7 +1620,8 @@ function scenarioLabel(run) {
 }
 
 function runName(run) {
-  return `${run.strategy}, ${run.parking}, ${run.elevators} cab.`;
+  const layout = run.layout && !/^\d+$/.test(run.layout) ? `zones ${run.layout}` : `${run.elevators} cab.`;
+  return `${run.strategy}, ${run.parking}, ${layout}`;
 }
 
 async function openRuns(scenario) {
@@ -1613,7 +1688,7 @@ function renderRuns() {
     for (const column of COLUMNS) {
       const td = document.createElement('td');
       const value = run[column.key];
-      td.textContent = column.format ? column.format(value) : value;
+      td.textContent = column.format ? column.format(value, run) : value;
       if (column.text) td.className = 'text';
       if (run.clean && best[column.key] !== undefined && value === best[column.key]) td.classList.add('best');
       tr.append(td);
@@ -1683,7 +1758,7 @@ function renderCharts(rows) {
 async function watchRun(run) {
   try {
     await post('/api/restart', {
-      numberOfElevators: run.elevators,
+      layout: run.layout || String(run.elevators),
       numberOfFloors: run.floors,
       maxPeople: run.maxPeople,
       averageCallsPerDay: run.callsPerDay,

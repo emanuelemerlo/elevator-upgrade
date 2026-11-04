@@ -70,7 +70,9 @@ struct ElevatorSnapshot
   std::uint64_t travelledFloors{ 0U };
   std::uint64_t runs{ 0U };
   std::uint64_t doorCycles{ 0U };
-  double travelEnergyWh{ 0.0 };        // motor and doors (standby excluded, see Energy.h)
+  double travelEnergyWh{ 0.0 };
+  std::string group;
+  long long motionDurationMs{ 0 };     // duration of the floor transition in progress (shorter on express floors)        // motor and doors (standby excluded, see Energy.h)
 };
 
 // Consistent view of a cabin used by the dispatcher to predict its route.
@@ -88,7 +90,13 @@ struct ElevatorDispatchState
 class Elevator final
 {
 public:
-  explicit Elevator(const std::string& id = "");
+  /**
+   * \param servedFloors floors where the cabin can stop (empty = every floor); it passes the others express.
+   * \param startFloor where the cabin waits at the start (the lobby of its group).
+   * \param group name of its group of cabins ("" in a building without zones).
+   */
+  explicit Elevator(const std::string& id = "", std::vector<bool> servedFloors = {},
+    Floors::FloorNumber startFloor = 0U, std::string group = "");
 
   Elevator(const Elevator&) = delete;
   Elevator(Elevator&&) = delete;
@@ -155,6 +163,9 @@ private:
   void ParkIfIdle();
   void AddEnergy(double wh);
   void AddTravelEnergy(Direction direction);
+  // Time to move to the next floor: shorter when the cabin passes a floor it does not serve (express run).
+  std::chrono::milliseconds TimeToReach(Floors::FloorNumber nextFloor) const;
+  bool Serves(Floors::FloorNumber floor) const { return m_servedFloors.empty() || (floor < m_servedFloors.size() && m_servedFloors[floor]); }
   bool StopRequested() const;
 
 private:
@@ -178,6 +189,9 @@ private:
   std::atomic<long long> m_motionStartMs{ 0 };
   std::atomic_bool m_outOfOrderRequested{ false };
   std::atomic<Floors::FloorNumber> m_homeFloor{ Floors::InvalidFloor };
+  std::vector<bool> m_servedFloors;    // set before the cabin thread starts, never changed afterwards
+  std::string m_group;
+  mutable std::atomic<long long> m_motionDurationMs{ 0 };
 
   // m_callPending is the wake-up predicate of m_go: it is written under m_goMutex so that a
   // call assigned while the thread is busy (or not yet waiting) is never lost.

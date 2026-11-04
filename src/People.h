@@ -44,7 +44,8 @@ public:
     const Direction currentDirection, 
     const std::string& elevatorId,
     std::vector<std::shared_ptr<Call>>* refusedPassengers = nullptr,
-    bool allowBoarding = true);
+    bool allowBoarding = true,
+    std::vector<std::shared_ptr<Call>>* transferringPassengers = nullptr);
 
   void Trace(const Floors::FloorNumber currentFloor = Floors::InvalidFloor);
 
@@ -67,7 +68,8 @@ private:
     const std::string& elevatorId,
     std::vector<std::shared_ptr<Call>>* refusedPassengers);
 
-  void Exit(const Floors::FloorNumber currentFloor, const std::string& elevatorId);
+  void Exit(const Floors::FloorNumber currentFloor, const std::string& elevatorId,
+    std::vector<std::shared_ptr<Call>>* transferringPassengers);
 
 private:
   mutable std::mutex m_mutex;

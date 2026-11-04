@@ -18,6 +18,7 @@
 #include "RunArchive.h"
 #include "Scenario.h"
 #include "BuildingContext.h"
+#include "Zoning.h"
 #include <algorithm>
 
 #include <chrono>
@@ -519,6 +520,113 @@ namespace
   }
 }
 
+namespace
+{
+  void Zones()
+  {
+    std::cout << "Zones and sky lobbies" << std::endl;
+
+    auto settings = BaseSettings();
+    settings.numberOfFloors = 40;
+    Zoning::ApplyLayout("1-20:6, 21-39:5", settings);
+    auto groups = Zoning::Groups(settings);
+    Check(groups.size() == 2U && groups[0].cabins == 6U && groups[1].cabins == 5U, "two zones with their cabins");
+    Check(groups[1].Serves(0U) && !groups[1].Serves(10U) && groups[1].Serves(30U), "the high zone serves the lobby and its floors only");
+    Check(Zoning::TotalCabins(settings) == 11U && Zoning::Layout(settings) == "1-20:6, 21-39:5", "the layout is kept as written");
+
+    const auto rejected = [&settings](const std::string& layout)
+    {
+      auto copy = settings;
+      try
+      {
+        Zoning::ApplyLayout(layout, copy);
+      }
+      catch (const std::invalid_argument&)
+      {
+        return true;
+      }
+      return false;
+    };
+
+    Check(rejected("1-19:6, 21-39:5"), "a floor without zone is refused");
+    Check(rejected("1-20:6, 20-39:5"), "a floor in two zones is refused");
+    Check(rejected("1-20:6, 21-39:5 @ 25:2"), "a sky lobby inside a zone is refused");
+    Check(rejected("0-20:6, 21-39:5"), "the lobby cannot be in a zone");
+
+    settings.numberOfFloors = 60;
+    Zoning::ApplyLayout("1-29:8, 31-45:6, 46-59:6 @ 30:4", settings);
+    groups = Zoning::Groups(settings);
+    Check(groups.size() == 4U && groups[3].shuttle && groups[1].lobby == 30U && groups[0].lobby == 0U,
+      "zones above the sky lobby start from it, a shuttle reaches it");
+
+    const auto leg = [&groups](const unsigned int from, const unsigned int to) { return Zoning::Plan(groups, from, to); };
+    Check(leg(0, 15).group == 0 && leg(0, 15).to == 15U, "lobby to the low zone: direct");
+    Check(leg(0, 50).group == 3 && leg(0, 50).to == 30U, "lobby to the top zone: shuttle to the sky lobby first");
+    Check(leg(15, 50).group == 0 && leg(15, 50).to == 0U, "low zone to the top zone: down to the lobby first");
+    Check(leg(35, 50).group == 1 && leg(35, 50).to == 30U, "between two zones of the sky lobby: change there");
+    Check(leg(50, 0).group == 2 && leg(50, 0).to == 30U, "top zone to the street: down to the sky lobby first");
+    Check(leg(30, 0).group == 3 && leg(30, 0).to == 0U, "sky lobby to the street: shuttle");
+  }
+
+  void ZonedRun()
+  {
+    std::cout << "A zoned building with a sky lobby (2000x)" << std::endl;
+
+    auto settings = BaseSettings();
+    settings.numberOfFloors = 40;
+    settings.dayStartHour = 8.0;
+    settings.numberOfCalls = 400;
+    settings.averageCallsPerDay = 9600;
+    settings.randomSeed = 5;
+    Zoning::ApplyLayout("1-12:4, 14-26:4, 27-39:4 @ 13:3", settings);
+    Configuration::Apply(settings);
+    Check(Configuration::Building::NumberOfElevators() == 15U, "the building has the cabins of its groups");
+
+    Simulation simulation;
+    simulation.Start();
+
+    std::vector<ElevatorGroup> groups;
+    std::vector<std::string> ids;
+    {
+      auto lock = simulation.Lock();
+      groups = simulation.GetManagement()->GetGroups();
+      for (const auto& elevator : simulation.GetManagement()->GetElevatorSnapshots())
+        ids.push_back(elevator.id);
+    }
+    Check(ids.size() == 15U && ids.front() == "A1" && ids.back() == "S3", "cabins are named after their group (A1... S3)");
+
+    const auto finished = WaitFor([&simulation]() { simulation.CheckFinished(); return simulation.Archived(); }, std::chrono::seconds(60));
+    const auto statistics = Statistics::GetSnapshot();
+    simulation.Stop();
+
+    Check(finished, "the zoned run ends");
+    Check(statistics.completedPassengers + statistics.abandonedCalls == statistics.queuedCalls, "everybody arrives, changing cabin when needed");
+    Check(statistics.transfers > 50U, "many trips need a change of cabin (" + std::to_string(statistics.transfers) + ")");
+
+    // No cabin ever stopped on a floor its group does not serve.
+    bool onlyServedFloors = true;
+    for (const auto& event : EventBus::Since(0U, 100000U))
+    {
+      if (event.type != "board" && event.type != "arrive" && event.type != "transfer")
+        continue;
+
+      const auto elevatorAt = event.data.find("\"elevator\":\"");
+      const auto floorAt = event.data.find("\"floor\":");
+      if (elevatorAt == std::string::npos || floorAt == std::string::npos)
+        continue;
+
+      const auto groupName = event.data.substr(elevatorAt + 12U, 1U);
+      const auto floor = static_cast<unsigned int>(std::stoul(event.data.substr(floorAt + 8U)));
+      for (const auto& group : groups)
+        if (group.name == groupName && !group.Serves(floor))
+          onlyServedFloors = false;
+    }
+    Check(onlyServedFloors, "cabins stop only on the floors of their group");
+    Check(Configuration::Elevator::TimeToPassAnExpressFloor() < Configuration::Elevator::TimeToReachTheNextFloor(),
+      "express floors are passed faster");
+  }
+}
+
 int main()
 {
   Clock();
@@ -530,6 +638,8 @@ int main()
   Parking();
   Stairs();
   Twin();
+  Zones();
+  ZonedRun();
 
   LogBase::FlushPendingMessages();
 

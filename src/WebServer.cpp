@@ -14,6 +14,7 @@
 #include "TrafficProfile.h"
 #include "RunArchive.h"
 #include "Scenario.h"
+#include "Zoning.h"
 #include "BuildingContext.h"
 
 // cpp-httplib is third party code: it is compiled without the warnings of the project (Visual Studio uses /W4 /WX).
@@ -31,6 +32,7 @@
 #include <cmath>
 #include <iostream>
 #include <thread>
+#include <sstream>
 
 namespace
 {
@@ -148,6 +150,20 @@ namespace
       .Add("batch", batchJson);
   }
 
+  Json::Writer GroupsJson()
+  {
+    auto groups = Json::Writer::Array();
+    for (const auto& group : Zoning::Groups(Configuration::Get()))
+      groups.Push(Json::Writer::Object()
+        .Add("name", group.name)
+        .Add("lobby", group.lobby)
+        .Add("from", group.from)
+        .Add("to", group.to)
+        .Add("cabins", group.cabins)
+        .Add("shuttle", group.shuttle));
+    return groups;
+  }
+
   Json::Writer BuildingJson()
   {
     return Json::Writer::Object()
@@ -158,7 +174,9 @@ namespace
       .Add("doorMs", static_cast<long long>(Configuration::Elevator::DoorTransitionTime().count()))
       .Add("dwellMs", static_cast<long long>(Configuration::Elevator::EnterAndExitTime().count()))
       .Add("pattern", Configuration::PatternName(Configuration::CallsGenerator::TrafficPattern()))
-      .Add("patienceS", Configuration::Get().stairsPatienceSeconds, 0);
+      .Add("patienceS", Configuration::Get().stairsPatienceSeconds, 0)
+      .Add("layout", Zoning::Layout(Configuration::Get()))
+      .Add("groups", GroupsJson());
   }
 
   Json::Writer ElevatorJson(const ElevatorSnapshot& elevator)
@@ -197,7 +215,9 @@ namespace
       .Add("travelledFloors", static_cast<unsigned long long>(elevator.travelledFloors))
       .Add("runs", static_cast<unsigned long long>(elevator.runs))
       .Add("doorCycles", static_cast<unsigned long long>(elevator.doorCycles))
-      .Add("travelWh", elevator.travelEnergyWh, 1);
+      .Add("travelWh", elevator.travelEnergyWh, 1)
+      .Add("group", elevator.group)
+      .Add("motionMs", elevator.motionDurationMs);
 
     return json;
   }
@@ -235,6 +255,8 @@ namespace
       .Add("maxJourneyMs", static_cast<unsigned long long>(statistics.maxJourneyTimeMs))
       .Add("requeued", static_cast<unsigned long long>(statistics.requeuedCalls))
       .Add("stairs", static_cast<unsigned long long>(statistics.abandonedCalls))
+      .Add("transfers", static_cast<unsigned long long>(statistics.transfers))
+      .Add("transferWaitMs", statistics.AverageTransferWaitMs(), 0)
       .Add("capacityLimited", static_cast<unsigned long long>(statistics.capacityLimitedDecisions))
       .Add("peakCabinPeople", static_cast<unsigned long long>(statistics.maxCabinPeople))
       .Add("assignedByElevator", assignments);
@@ -255,6 +277,8 @@ namespace
       .Add("stairsPatienceSeconds", settings.stairsPatienceSeconds, 0)
       .Add("standbyPowerW", settings.standbyPowerW, 0)
       .Add("motorEfficiency", settings.motorEfficiency, 2)
+      .Add("layout", Zoning::Layout(settings))
+      .Add("expressFloorFactor", settings.expressFloorFactor, 2)
       .Add("dayDurationSeconds", settings.dayDurationSeconds, 1)
       .Add("dayStartHour", settings.dayStartHour, 2)
       .Add("randomSeed", settings.randomSeed)
@@ -282,7 +306,7 @@ namespace
     static const char* NumericKeys[] = {
       "numberOfElevators", "numberOfFloors", "maxPeople", "averageCallsPerDay", "maxConcurrentCalls",
       "numberOfSimulationDays", "dayDurationSeconds", "dayStartHour", "randomSeed", "stairsPatienceSeconds",
-      "standbyPowerW", "motorEfficiency",
+      "standbyPowerW", "motorEfficiency", "expressFloorFactor",
       "timeToReachTheNextFloorMs", "doorTransitionTimeMs", "enterAndExitTimeMs" };
 
     static const char* WordKeys[] = { "trafficPattern", "dispatchStrategy", "idleParking" };
@@ -315,6 +339,13 @@ namespace
 
     json += "\"type\": \"Random\" }";
     Configuration::ParseJson(json, settings);
+
+    // Cabins and zones in one parameter: "4", "1-20:6, 21-40:6", "... @ 30:4" (see Zoning.h).
+    if (request.has_param("layout"))
+    {
+      Zoning::ApplyLayout(request.get_param_value("layout"), settings);
+      Configuration::Validate(settings);
+    }
   }
 
   std::vector<std::string> SplitList(const std::string& text)
@@ -463,7 +494,9 @@ std::string WebServer::Implementation::BuildingStateJson(Simulation& building)
       .Add("elevator", person->GetAssignedElevator())
       .Add("waitMs", static_cast<long long>(person->GetWaitingTime().count()))
       .Add("manual", person->IsManual())
-      .Add("evacuated", person->GetEvacuations() > 0U));
+      .Add("evacuated", person->GetEvacuations() > 0U)
+      .Add("finalTo", person->GetFinalDestination())
+      .Add("transfer", person->GetTransfers() > 0U));
 
   // Members of the state object, without the braces: the main building is at the top level of the state.
   auto json = Json::Writer::Object()
@@ -718,33 +751,46 @@ void WebServer::Implementation::RegisterRoutes()
 
       auto strategies = SplitList(request.get_param_value("strategies"));
       auto parkings = SplitList(request.get_param_value("parkings"));
-      auto elevators = SplitList(request.get_param_value("elevators"));
+      // Layouts are separated by '|' because a layout with zones contains commas.
+      std::vector<std::string> layouts;
+      {
+        std::stringstream stream(request.get_param_value("layouts"));
+        std::string layout;
+        while (std::getline(stream, layout, '|'))
+          if (layout.find_first_not_of(' ') != std::string::npos)
+            layouts.push_back(layout);
+      }
+      for (const auto& count : SplitList(request.get_param_value("elevators")))
+        layouts.push_back(count);
       if (strategies.empty())
         strategies.push_back(Configuration::Dispatch::StrategyName(base.dispatchStrategy));
       if (parkings.empty())
         parkings.push_back(Configuration::Dispatch::ParkingName(base.idleParking));
-      if (elevators.empty())
-        elevators.push_back(std::to_string(base.numberOfElevators));
+      if (layouts.empty())
+        layouts.push_back(Zoning::Layout(base));
 
-      if (strategies.size() * parkings.size() * elevators.size() > MaxVariants)
+      if (strategies.size() * parkings.size() * layouts.size() > MaxVariants)
         throw std::invalid_argument("at most " + std::to_string(MaxVariants) + " variants in one comparison");
 
       std::vector<Simulation::Variant> variants;
-      for (const auto& count : elevators)
+      for (const auto& layout : layouts)
         for (const auto& strategy : strategies)
           for (const auto& parking : parkings)
           {
-            unsigned int cabins = 0U;
-            if (!ParseUnsigned(count, cabins) || !IsWord(strategy) || !IsWord(parking))
-              throw std::invalid_argument("variants must be lists of strategies, parking rules and numbers of cabins");
+            if (!IsWord(strategy) || !IsWord(parking))
+              throw std::invalid_argument("variants must be lists of strategies, parking rules and layouts");
 
             Simulation::Variant variant;
             variant.settings = base;
-            variant.settings.numberOfElevators = cabins;
+            Zoning::ApplyLayout(layout, variant.settings);
             Configuration::ParseJson("{ \"dispatchStrategy\": \"" + strategy + "\", \"idleParking\": \"" + parking + "\" }",
               variant.settings);
+
+            const auto cabins = Zoning::TotalCabins(variant.settings);
+            const auto zoned = !variant.settings.zones.empty();
             variant.label = std::string(Configuration::Dispatch::StrategyName(variant.settings.dispatchStrategy)) + ", " +
-              Configuration::Dispatch::ParkingName(variant.settings.idleParking) + ", " + std::to_string(cabins) + " cabins";
+              Configuration::Dispatch::ParkingName(variant.settings.idleParking) + ", " +
+              (zoned ? "zones " + Zoning::Layout(variant.settings) : std::to_string(cabins) + " cabins");
             variants.push_back(variant);
           }
 
@@ -815,6 +861,11 @@ void WebServer::Implementation::RegisterRoutes()
 
         json += "\"type\": \"Random\" }";
         Configuration::ParseJson(json, settings);
+
+        const auto layout = request.get_param_value(name("layout"));
+        if (!layout.empty())
+          Zoning::ApplyLayout(layout, settings);
+
         return settings;
       };
 

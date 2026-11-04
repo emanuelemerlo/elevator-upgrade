@@ -69,8 +69,8 @@
           <div><dt>95% wait less</dt><dd id="statP95Wait">–</dd></div>
           <div><dt>Longest wait</dt><dd id="statMaxWait">–</dd></div>
           <div><dt>Took the stairs</dt><dd id="statStairs">0</dd></div>
-          <div><dt>Energy</dt><dd id="statEnergy">–</dd></div>
-          <div><dt>Energy per trip</dt><dd id="statWhPerTrip">–</dd></div>
+          <div><dt id="statEnergyLabel">Energy</dt><dd id="statEnergy">–</dd></div>
+          <div><dt>Changes of cabin</dt><dd id="statTransfers">0</dd></div>
         </dl>
         <canvas id="history" class="history" height="64" aria-label="People waiting over the last hours"></canvas>
         <p class="note" id="historyNote">People waiting, last 3 simulated hours</p>
@@ -126,7 +126,7 @@
       <h2 id="runDialogTitle">New run</h2>
       <p class="note">Starts the building again from the first hour of day 1 with these settings.</p>
       <div class="form-grid">
-        <label>Cabins <input type="number" name="numberOfElevators" min="1" max="26" required></label>
+        <label class="wide-field">Cabins and zones <input type="text" name="layout" required placeholder="4, or 1-20:6, 21-39:6, or ... @ 30:4" title="A number: one group serving every floor. Zones: floors:cabins, e.g. 1-20:6, 21-39:6. Sky lobbies after @: floor:shuttle cabins, e.g. 1-29:8, 31-59:8 @ 30:4"></label>
         <label>Floors <input type="number" name="numberOfFloors" min="2" max="60" required></label>
         <label>People per cabin <input type="number" name="maxPeople" min="1" max="60" required></label>
         <label>Trips per day <input type="number" name="averageCallsPerDay" min="1" max="200000" required></label>
@@ -165,6 +165,7 @@
           <label>Boarding time (s) <input type="number" name="dwellSeconds" min="0" max="120" step="0.1"></label>
           <label>Standby power per cabin (W) <input type="number" name="standbyPowerW" min="0" max="100000" step="10"></label>
           <label>Motor efficiency (0-1) <input type="number" name="motorEfficiency" min="0.05" max="1" step="0.05"></label>
+          <label>Express floor time (share of a floor) <input type="number" name="expressFloorFactor" min="0.05" max="1" step="0.05"></label>
         </div>
       </details>
       <p class="error" id="runError" role="alert"></p>
@@ -206,7 +207,10 @@
         <label><input type="checkbox" name="parking" value="Lobby"> Lobby</label>
         <label><input type="checkbox" name="parking" value="Spread"> Spread</label>
       </fieldset>
-      <label class="inline">Numbers of cabins <input type="text" name="elevators" placeholder="3, 4, 5" class="wide"></label>
+      <label class="layouts">Cabins and zones, one variant per line
+        <textarea name="layouts" rows="3" placeholder="8&#10;1-20:6, 21-39:6&#10;1-29:8, 31-59:8 @ 30:4"></textarea>
+      </label>
+      <p class="note">A number is one group serving every floor; zones are floors:cabins; sky lobbies follow @ as floor:shuttle cabins.</p>
       <p class="note" id="compareCount"></p>
       <p class="error" id="compareError" role="alert"></p>
       <div class="actions">
@@ -251,7 +255,7 @@
               <option value="Spread">Spread</option>
             </select>
           </label>
-          <label>Cabins <input type="number" name="leftNumberOfElevators" min="1" max="26" required></label>
+          <label>Cabins and zones <input type="text" name="leftLayout" required placeholder="8, or 1-20:6, 21-39:6"></label>
           <label>People per cabin <input type="number" name="leftMaxPeople" min="1" max="60" required></label>
         </fieldset>
         <fieldset>
@@ -270,7 +274,7 @@
               <option value="Spread">Spread</option>
             </select>
           </label>
-          <label>Cabins <input type="number" name="rightNumberOfElevators" min="1" max="26" required></label>
+          <label>Cabins and zones <input type="text" name="rightLayout" required placeholder="8, or 1-20:6, 21-39:6"></label>
           <label>People per cabin <input type="number" name="rightMaxPeople" min="1" max="60" required></label>
         </fieldset>
       </div>

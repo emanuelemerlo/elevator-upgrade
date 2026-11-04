@@ -13,10 +13,11 @@ void People::EnterAndExit(
   const Direction currentDirection, 
   const std::string& elevatorId,
   std::vector<std::shared_ptr<Call>>* refusedPassengers,
-  const bool allowBoarding)
+  const bool allowBoarding,
+  std::vector<std::shared_ptr<Call>>* transferringPassengers)
 {
   waitingPeople.Trace(currentFloor);
-  Exit(currentFloor, elevatorId);
+  Exit(currentFloor, elevatorId, transferringPassengers);
 
   if (allowBoarding)
     Enter(waitingPeople, currentFloor, currentDirection, elevatorId, refusedPassengers);
@@ -218,6 +219,8 @@ void People::Enter(
       const auto waitingTime = (*person)->GetWaitingTime();
       if ((*person)->MarkBoarded())
         Statistics::RecordBoardedPassenger(waitingTime);
+      else if ((*person)->GetTransfers() > 0U)
+        Statistics::RecordTransferWait(std::chrono::milliseconds((*person)->GetCurrentWaitMs()));
 
       EventBus::Publish("board", Json::Writer::Object()
         .Add("id", static_cast<unsigned long long>((*person)->GetId()))
@@ -238,7 +241,8 @@ void People::Enter(
   m_log.Trace(message);
 }
 
-void People::Exit(const Floors::FloorNumber currentFloor, const std::string& elevatorId)
+void People::Exit(const Floors::FloorNumber currentFloor, const std::string& elevatorId,
+  std::vector<std::shared_ptr<Call>>* transferringPassengers)
 {
   std::stringstream message;
   message << "People exit to floor " << std::to_string(currentFloor) << ": ";
@@ -248,6 +252,16 @@ void People::Exit(const Floors::FloorNumber currentFloor, const std::string& ele
 
   while(person != end())
   {
+    if ((*person)->GetDestinationFloor() == currentFloor && (*person)->GetFinalDestination() != currentFloor)
+    {
+      // End of a leg, not of the trip: the passenger changes cabin here (zoned building).
+      message << "change " << (*person)->ToString();
+      if (transferringPassengers != nullptr)
+        transferringPassengers->push_back(*person);
+      person = erase(person);
+      continue;
+    }
+
     if ((*person)->GetDestinationFloor() == currentFloor)
     {
       message << (*person)->ToString();

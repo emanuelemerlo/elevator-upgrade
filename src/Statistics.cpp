@@ -135,6 +135,27 @@ void Statistics::RecordRequeuedCall()
   ++CurrentStore().snapshot.requeuedCalls;
 }
 
+double StatisticsSnapshot::AverageTransferWaitMs() const
+{
+  if (transferBoardings == 0U)
+    return 0.0;
+
+  return static_cast<double>(totalTransferWaitMs) / static_cast<double>(transferBoardings);
+}
+
+void Statistics::RecordTransferWait(const std::chrono::milliseconds waitTime)
+{
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  ++CurrentStore().snapshot.transferBoardings;
+  CurrentStore().snapshot.totalTransferWaitMs += static_cast<std::uint64_t>(std::max<long long>(0, waitTime.count()));
+}
+
+void Statistics::RecordTransfer()
+{
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  ++CurrentStore().snapshot.transfers;
+}
+
 void Statistics::RecordAbandonedCall()
 {
   std::lock_guard<std::mutex> lock(CurrentStore().mutex);

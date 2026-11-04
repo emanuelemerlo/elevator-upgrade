@@ -38,7 +38,10 @@ struct StatisticsSnapshot
   std::uint64_t totalJourneyTimeMs{ 0U };   // call creation -> arrival at destination
   std::uint64_t maxJourneyTimeMs{ 0U };
   std::uint64_t requeuedCalls{ 0U };
-  std::uint64_t abandonedCalls{ 0U };      // passengers who gave up waiting and took the stairs        // calls sent back to the dispatcher (e.g. boarding refused by a full cabin)
+  std::uint64_t abandonedCalls{ 0U };      // passengers who gave up waiting and took the stairs
+  std::uint64_t transfers{ 0U };           // changes of cabin at a lobby (zoned buildings)
+  std::uint64_t transferBoardings{ 0U };   // boardings after a change of cabin...
+  std::uint64_t totalTransferWaitMs{ 0U }; // ...and the time waited at the lobby for them        // calls sent back to the dispatcher (e.g. boarding refused by a full cabin)
   std::uint64_t totalAssignmentTimeUs{ 0U };
   std::uint64_t maxAssignmentTimeUs{ 0U };
   std::vector<ElevatorAssignmentStatistics> elevatorAssignments;
@@ -46,6 +49,7 @@ struct StatisticsSnapshot
   double AverageWaitTimeMs() const;
   double AverageAssignmentTimeMs() const;
   double AverageJourneyTimeMs() const;
+  double AverageTransferWaitMs() const;
 };
 
 // Distribution of the passenger waiting times (call creation -> boarding), in simulated milliseconds.
@@ -79,6 +83,8 @@ namespace Statistics
   void RecordCompletedPassenger(std::chrono::milliseconds journeyTime);
   void RecordRequeuedCall();
   void RecordAbandonedCall();
+  void RecordTransfer();
+  void RecordTransferWait(std::chrono::milliseconds waitTime);
   // Cheap accessor (no copies) used on hot paths: calls created and not yet completed.
   std::uint64_t ActiveCalls();
   WaitDistribution GetWaitDistribution();

@@ -1,6 +1,7 @@
 #include "Configuration.h"
 #include "SimulationClock.h"
 #include "BuildingContext.h"
+#include "Zoning.h"
 
 #include <algorithm>
 #include <cctype>
@@ -176,8 +177,11 @@ void Configuration::Validate(const Settings& settings)
     if (settings.numberOfElevators == 0)
       throw std::invalid_argument("building.numberOfElevators must be greater than 0");
 
-    if (settings.numberOfElevators > 26)
+    if (settings.numberOfElevators > 26 && settings.zones.empty())
       throw std::invalid_argument("building.numberOfElevators must be at most 26 (system generates IDs A-Z)");
+
+    if (!(settings.expressFloorFactor > 0.0) || settings.expressFloorFactor > 1.0)
+      throw std::invalid_argument("zoning.expressFloorFactor must be greater than 0 and at most 1");
 
     if (settings.numberOfFloors < 2)
       throw std::invalid_argument("building.numberOfFloors must be at least 2");
@@ -225,6 +229,9 @@ void Configuration::Validate(const Settings& settings)
 
     if (settings.maxPeoplePerElevator == 0)
       throw std::invalid_argument("elevator.maxPeople must be greater than 0");
+
+    // The zones must cover the building exactly (throws with the reason).
+    Zoning::Groups(settings);
 }
 
 bool Configuration::LoadFromFile(const std::string& path)
@@ -279,6 +286,14 @@ void Configuration::ParseJson(const std::string& json, Settings& settings)
 
   if (FindString(json, "idleParking", text))
     settings.idleParking = ParseParking(text);
+
+  if (FindString(json, "zones", text))
+    settings.zones = text;
+
+  if (FindString(json, "skyLobbies", text))
+    settings.skyLobbies = text;
+
+  FindDouble(json, "expressFloorFactor", settings.expressFloorFactor);
 
   if (FindString(json, "runsFilePath", text))
     settings.runsFilePath = text;
@@ -337,7 +352,8 @@ const Configuration::Settings& Configuration::Get()
 
 unsigned int Configuration::Building::NumberOfElevators()
 {
-  return Get().numberOfElevators;
+  // With zones the cabins are the ones of the groups (and of the shuttles).
+  return Get().zones.empty() ? Get().numberOfElevators : Zoning::TotalCabins(Get());
 }
 
 unsigned int Configuration::Building::NumberOfFloors()
@@ -348,6 +364,12 @@ unsigned int Configuration::Building::NumberOfFloors()
 std::chrono::milliseconds Configuration::Elevator::TimeToReachTheNextFloor()
 {
   return Get().timeToReachTheNextFloor;
+}
+
+std::chrono::milliseconds Configuration::Elevator::TimeToPassAnExpressFloor()
+{
+  const auto floorMs = static_cast<double>(Get().timeToReachTheNextFloor.count());
+  return std::chrono::milliseconds(std::max(1LL, static_cast<long long>(floorMs * Get().expressFloorFactor)));
 }
 
 std::chrono::milliseconds Configuration::Elevator::EnterAndExitTime()

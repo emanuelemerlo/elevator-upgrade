@@ -11,6 +11,7 @@
 #include "SimulationClock.h"
 #include "Energy.h"
 #include "BuildingContext.h"
+#include "Zoning.h"
 
 #include <map>
 #include <random>
@@ -36,6 +37,7 @@ namespace
     double wear{ 0.0 };
     double score{ std::numeric_limits<double>::max() };
     std::size_t committedLoad{ 0U };
+    bool otherGroup{ false };   // the cabin belongs to a group that does not serve this leg
   };
 
   double WearScore(const Elevator& elevator)
@@ -372,40 +374,58 @@ namespace
 
 Management::Management(const unsigned int numberOfElevators)
 {
-  for(auto elevatorIndex = 0U; elevatorIndex < numberOfElevators; ++elevatorIndex)
-  {
-    const auto elevatorId = std::string(1U, static_cast<char>('A' + elevatorIndex));
-    m_elevators.push_back(std::make_unique<Elevator>(elevatorId));
+  // Groups of cabins: one group serving every floor, or the zones and shuttles of a tall building (see Zoning).
+  m_groups = Zoning::Groups(Configuration::Get());
 
-    // A passenger refused by a full cabin must be dispatched again; freed capacity wakes up the pending calls.
-    m_elevators.back()->SetRefusedCallHandler([this](const std::shared_ptr<Call>& call) { EnqueuePendingCall(call); });
-    m_elevators.back()->SetCapacityFreedHandler([this]() { RequestPendingRetry(); });
+  for (std::size_t groupIndex = 0U; groupIndex < m_groups.size(); ++groupIndex)
+  {
+    const auto& group = m_groups[groupIndex];
+
+    // Cabins of the floors it serves, in order: they give the home floors of the spread parking.
+    std::vector<Floors::FloorNumber> servedFloors;
+    for (Floors::FloorNumber floor = 0U; floor < group.served.size(); ++floor)
+      if (group.served[floor])
+        servedFloors.push_back(floor);
+
+    for (auto cabin = 0U; cabin < group.cabins; ++cabin)
+    {
+      // A, B, C... as in the original program without zones; A1, A2... B1... S1... with zones.
+      const auto elevatorId = group.name.empty()
+        ? std::string(1U, static_cast<char>('A' + m_elevators.size()))
+        : group.name + std::to_string(cabin + 1U);
+
+      m_elevators.push_back(std::make_unique<Elevator>(
+        elevatorId, group.name.empty() ? std::vector<bool>() : group.served, group.lobby, group.name));
+      m_elevatorGroup.push_back(static_cast<int>(groupIndex));
+
+      // A passenger refused by a full cabin must be dispatched again; freed capacity wakes up the pending calls.
+      m_elevators.back()->SetRefusedCallHandler([this](const std::shared_ptr<Call>& call) { EnqueuePendingCall(call); });
+      m_elevators.back()->SetCapacityFreedHandler([this]() { RequestPendingRetry(); });
+
+      // Idle parking: where every cabin waits when it has nothing to do, within the floors of its group.
+      switch (Configuration::Dispatch::IdleParking())
+      {
+      case Configuration::Dispatch::Parking::Lobby:
+        m_elevators.back()->SetHomeFloor(group.lobby);
+        break;
+
+      case Configuration::Dispatch::Parking::Spread:
+      {
+        // Home floors in the middle of equal parts of the floors served: 4 cabins in 20 floors wait at 2, 7, 12, 17.
+        const auto part = static_cast<double>(servedFloors.size()) / static_cast<double>(group.cabins);
+        const auto position = std::min(servedFloors.size() - 1U, static_cast<std::size_t>((static_cast<double>(cabin) + 0.5) * part));
+        m_elevators.back()->SetHomeFloor(servedFloors[position]);
+        break;
+      }
+
+      case Configuration::Dispatch::Parking::Stay:
+      default:
+        break;
+      }
+    }
   }
 
-  // Idle parking: where every cabin waits when it has nothing to do.
-  const auto floors = Floors::TotalFloors();
-  for (std::size_t index = 0U; index < m_elevators.size(); ++index)
-  {
-    switch (Configuration::Dispatch::IdleParking())
-    {
-    case Configuration::Dispatch::Parking::Lobby:
-      m_elevators[index]->SetHomeFloor(Floors::BottomFloor);
-      break;
-
-    case Configuration::Dispatch::Parking::Spread:
-    {
-      // Home floors in the middle of equal zones of the building: 4 cabins in 20 floors wait at 2, 7, 12, 17.
-      const auto zone = static_cast<double>(floors) / static_cast<double>(m_elevators.size());
-      const auto home = static_cast<Floors::FloorNumber>((static_cast<double>(index) + 0.5) * zone);
-      m_elevators[index]->SetHomeFloor(std::min(home, Floors::TopFloor()));
-      break;
-    }
-
-    case Configuration::Dispatch::Parking::Stay:
-    default:
-      break;
-    }
-  }
+  (void)numberOfElevators; // the cabins come from the groups (equal to the configured number without zones)
 
   m_log.SetTraceId("Management");
 
@@ -593,6 +613,14 @@ bool Management::AssignCallInternal(const std::shared_ptr<Call>& call, bool enqu
   // decision reads mutable elevator queues and writes the assigned elevator id.
   std::lock_guard<std::mutex> lock(m_assignMutex);
 
+  // Route of the passenger: the group that takes him now, and where this leg ends (his destination, or a lobby
+  // where he changes cabin in a zoned building).
+  const auto leg = Zoning::Plan(m_groups, call->GetStartFloor(), call->GetFinalDestination());
+  if (leg.group < 0)
+    return false;
+
+  call->SetDestinationFloor(leg.to);
+
   if (!call->IsValid())
     return false;
 
@@ -612,8 +640,9 @@ bool Management::AssignCallInternal(const std::shared_ptr<Call>& call, bool enqu
     AssignmentCandidate candidate;
     candidate.elevator = m_elevators[index].get();
     candidate.committedLoad = committed[index].size();
+    candidate.otherGroup = m_elevatorGroup[index] != leg.group;
 
-    if (states[index].status != ElevatorStatus::OutOfOrder)
+    if (states[index].status != ElevatorStatus::OutOfOrder && !candidate.otherGroup)
     {
       const AssignmentOptimizer::CabinState cabin{ states[index].floor, states[index].direction, states[index].doorsOpen, states[index].targetFloor };
       candidate.evaluation = AssignmentOptimizer::EvaluateAssignment(cabin, committed[index], newPassenger, capacity, timing, weights);
@@ -681,8 +710,10 @@ bool Management::AssignCallInternal(const std::shared_ptr<Call>& call, bool enqu
     // Every cabin would exceed its capacity (or is out of order): the call waits in the pending queue.
     if (enqueueIfCapacityLimited)
     {
-      const auto inService = std::count_if(states.begin(), states.end(),
-        [](const ElevatorDispatchState& state) { return state.status != ElevatorStatus::OutOfOrder; });
+      std::size_t inService = 0U;
+      for (std::size_t index = 0U; index < states.size(); ++index)
+        if (states[index].status != ElevatorStatus::OutOfOrder && m_elevatorGroup[index] == leg.group)
+          ++inService;
 
       // The event is counted once per call: retries made by the pending worker are not new events.
       // With every cabin out of order the wait is not caused by the capacity.
@@ -731,6 +762,9 @@ bool Management::AssignCallInternal(const std::shared_ptr<Call>& call, bool enqu
     for (std::size_t index = 0U; index < candidates.size(); ++index)
     {
       const auto& candidate = candidates[index];
+      if (candidate.otherGroup)
+        continue; // only the cabins of the group that serves this leg are candidates
+
       auto item = Json::Writer::Object();
       item.Add("elevator", candidate.elevator->GetId());
 
@@ -758,6 +792,8 @@ bool Management::AssignCallInternal(const std::shared_ptr<Call>& call, bool enqu
       .Add("onTheWay", best->evaluation.onTheWay)
       .Add("retry", !enqueueIfCapacityLimited)
       .Add("strategy", Configuration::Dispatch::StrategyName(strategy))
+      .Add("finalTo", call->GetFinalDestination())
+      .Add("group", m_groups[static_cast<std::size_t>(leg.group)].name)
       .Add("candidates", candidatesJson));
   }
 
@@ -806,6 +842,8 @@ std::vector<std::string> Management::BuildReport() const
   addGlobalStat("Boarded passengers", std::to_string(statistics.boardedPassengers));
   addGlobalStat("Completed passengers", std::to_string(statistics.completedPassengers));
   addGlobalStat("Took the stairs", std::to_string(statistics.abandonedCalls));
+  addGlobalStat("Changes of cabin", std::to_string(statistics.transfers));
+  addGlobalStat("Wait at the change", FormatSeconds(statistics.AverageTransferWaitMs()));
   addGlobalStat("Simulation time", Configuration::Simulation::CurrentDayTimeLabel());
   addGlobalStat("Average wait", FormatSeconds(statistics.AverageWaitTimeMs()));
   addGlobalStat("Max wait", FormatSeconds(static_cast<double>(statistics.maxWaitTimeMs)));
@@ -1002,8 +1040,7 @@ std::vector<ElevatorSnapshot> Management::GetElevatorSnapshots() const
   for (const auto& elevator : m_elevators)
     snapshots.push_back(elevator->GetSnapshot());
 
-  std::sort(snapshots.begin(), snapshots.end(),
-    [](const auto& a, const auto& b) { return a.id < b.id; });
+  // In the order of creation: the cabins of a group are next to each other (A1, A2... A10, B1...).
 
   return snapshots;
 }

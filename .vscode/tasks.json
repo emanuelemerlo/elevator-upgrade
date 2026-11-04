@@ -33,6 +33,7 @@
         "src/SymbolicInterface.cpp",
         "src/TrafficProfile.cpp",
         "src/WebServer.cpp",
+        "src/Zoning.cpp",
         "-o",
         "Elevator.exe",
         "-lws2_32"

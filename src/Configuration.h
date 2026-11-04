@@ -68,6 +68,12 @@ namespace Configuration
     CallsGenerator::Pattern trafficPattern{ CallsGenerator::Pattern::Office };
     Dispatch::Strategy dispatchStrategy{ Dispatch::Strategy::Optimized };
     Dispatch::Parking idleParking{ Dispatch::Parking::Stay };
+
+    // Zoning of tall buildings (see Zoning.h): empty = one group of numberOfElevators cabins serving every floor.
+    std::string zones;        // e.g. "1-20:6, 21-40:6": floors of each zone and its cabins
+    std::string skyLobbies;   // e.g. "30:4": intermediate lobby and cabins of its shuttle from the ground floor
+    // Time to pass a floor the cabin does not serve (express run), as a share of timeToReachTheNextFloor.
+    double expressFloorFactor{ 0.35 };
     // Average patience of a passenger, in simulated seconds: who has waited longer gives up and takes the stairs.
     // Every passenger of the scenario gets a patience between half and one and a half times this value. 0 = never.
     double stairsPatienceSeconds{ 120.0 };
@@ -121,6 +127,7 @@ namespace Configuration
   namespace Elevator
   {
     std::chrono::milliseconds TimeToReachTheNextFloor();
+    std::chrono::milliseconds TimeToPassAnExpressFloor();
     std::chrono::milliseconds EnterAndExitTime();
     std::chrono::milliseconds DoorTransitionTime();
     unsigned int MaxPeople();

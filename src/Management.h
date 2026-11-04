@@ -19,6 +19,7 @@
 #include <string>
 
 #include "Elevator.h"
+#include "Zoning.h"
 
 class Management final 
 {
@@ -60,6 +61,10 @@ public:
 
   EnergyTotals GetEnergy() const;
 
+  // Groups of cabins (one without zones) and the group of every cabin, in the order of the snapshots.
+  const std::vector<ElevatorGroup>& GetGroups() const { return m_groups; }
+  const std::vector<int>& GetElevatorGroups() const { return m_elevatorGroup; }
+
   std::vector<ElevatorSnapshot> GetElevatorSnapshots() const;
 
 private:
@@ -69,6 +74,8 @@ private:
 
 private:
   std::vector<std::unique_ptr<class Elevator>> m_elevators;
+  std::vector<ElevatorGroup> m_groups;
+  std::vector<int> m_elevatorGroup;
   std::mutex m_assignMutex;
   bool m_shutdownCompleted{ false };
 

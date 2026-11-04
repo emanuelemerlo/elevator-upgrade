@@ -34,6 +34,7 @@
     <ClCompile Include="src\SymbolicInterface.cpp" />
     <ClCompile Include="src\TrafficProfile.cpp" />
     <ClCompile Include="src\WebServer.cpp" />
+    <ClCompile Include="src\Zoning.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\AssignmentOptimizer.h" />
@@ -64,6 +65,7 @@
     <ClInclude Include="src\Watchdog.h" />
     <ClInclude Include="src\WebServer.h" />
     <ClInclude Include="src\WorkerThread.h" />
+    <ClInclude Include="src\Zoning.h" />
     <ClInclude Include="third_party\cpp-httplib\httplib.h" />
   </ItemGroup>
   <ItemGroup>

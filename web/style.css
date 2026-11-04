@@ -490,3 +490,18 @@ table.runs td button { padding: 0.1rem 0.5rem; font-size: 0.78rem; }
 @media (max-width: 560px) {
   .twin-sides { grid-template-columns: 1fr; }
 }
+
+/* Zones ---------------------------------------------------------------------- */
+
+.form-grid .wide-field { grid-column: 1 / -1; }
+.layouts { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 1rem; font-size: 0.85rem; color: var(--ink-soft); }
+.layouts textarea {
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--ink);
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--steel-400);
+  border-radius: var(--radius-small);
+  resize: vertical;
+}
+.numbers dt small { display: block; font-size: 0.72rem; }

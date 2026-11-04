@@ -10,6 +10,7 @@
 #include "RunArchive.h"
 #include "Scenario.h"
 #include "BuildingContext.h"
+#include "Zoning.h"
 
 #include <chrono>
 #include <ctime>
@@ -310,7 +311,8 @@ void Simulation::Archive()
     .Add("interventions", m_interventions.load())
     .Add("strategy", Configuration::Dispatch::StrategyName(settings.dispatchStrategy))
     .Add("parking", Configuration::Dispatch::ParkingName(settings.idleParking))
-    .Add("elevators", settings.numberOfElevators)
+    .Add("elevators", Zoning::TotalCabins(settings))
+    .Add("layout", Zoning::Layout(settings))
     .Add("floors", settings.numberOfFloors)
     .Add("maxPeople", settings.maxPeoplePerElevator)
     .Add("pattern", Configuration::PatternName(settings.trafficPattern))
@@ -324,6 +326,8 @@ void Simulation::Archive()
     .Add("trips", u64(statistics.queuedCalls))
     .Add("delivered", u64(statistics.completedPassengers))
     .Add("stairs", u64(statistics.abandonedCalls))
+    .Add("transfers", u64(statistics.transfers))
+    .Add("transferWaitMs", statistics.AverageTransferWaitMs(), 0)
     .Add("avgWaitMs", statistics.AverageWaitTimeMs(), 0)
     .Add("p50WaitMs", waits.p50Ms, 0)
     .Add("p95WaitMs", waits.p95Ms, 0)
@@ -348,6 +352,8 @@ void Simulation::Archive()
   EventBus::Publish("finished", Json::Writer::Object()
     .Add("completed", u64(statistics.completedPassengers))
     .Add("stairs", u64(statistics.abandonedCalls))
+    .Add("transfers", u64(statistics.transfers))
+    .Add("transferWaitMs", statistics.AverageTransferWaitMs(), 0)
     .Add("run", id)
     .Add("batch", m_batchId)
     .Add("pair", m_pairId)

@@ -8,9 +8,12 @@
 #include "Energy.h"
 #include "BuildingContext.h"
 
-Elevator::Elevator(const std::string& id)
+Elevator::Elevator(const std::string& id, std::vector<bool> servedFloors, const Floors::FloorNumber startFloor, std::string group) :
+  m_servedFloors(std::move(servedFloors)),
+  m_group(std::move(group))
 {
   SetId(id);
+  m_currentFloor = startFloor;
 
   // The cabin thread runs in the building that creates the cabin (see BuildingContext).
   auto* context = &Context::Current();
@@ -212,10 +215,29 @@ void Elevator::PeopleEnterAndExit()
   std::vector<std::shared_ptr<Call>> refusedPassengers;
 
   // A cabin going out of order lets its passengers out but does not take anybody in.
+  std::vector<std::shared_ptr<Call>> transferringPassengers;
   m_people.EnterAndExit(Floors::GetPeople(), m_currentFloor.load(), m_currentDirection.load(), m_elevatorId,
-    &refusedPassengers, !m_outOfOrderRequested);
+    &refusedPassengers, !m_outOfOrderRequested, &transferringPassengers);
 
   RestoreDestinationStops();
+
+  // Passengers who change cabin here (end of a leg in a zoned building) wait on this floor for the next
+  // group and are given back to the dispatcher at once, while this cabin is still at the stop.
+  for (const auto& passenger : transferringPassengers)
+  {
+    passenger->Transfer(m_currentFloor.load());
+    Floors::GetPeople().InsertEvacuated(passenger);
+    Statistics::RecordTransfer();
+
+    EventBus::Publish("transfer", Json::Writer::Object()
+      .Add("id", static_cast<unsigned long long>(passenger->GetId()))
+      .Add("elevator", m_elevatorId)
+      .Add("floor", m_currentFloor.load())
+      .Add("to", passenger->GetFinalDestination()));
+
+    if (m_refusedCallHandler)
+      m_refusedCallHandler(passenger);
+  }
 
   Configuration::Simulation::SleepFor(Configuration::Elevator::EnterAndExitTime());
 
@@ -231,7 +253,7 @@ void Elevator::PeopleEnterAndExit()
       m_refusedCallHandler(passenger);
   }
 
-  if (m_capacityFreedHandler && (m_people.Count() < peopleBefore || !refusedPassengers.empty()))
+  if (m_capacityFreedHandler && (m_people.Count() < peopleBefore || !refusedPassengers.empty() || !transferringPassengers.empty()))
     m_capacityFreedHandler();
 }
 
@@ -286,7 +308,7 @@ void Elevator::Move(const Floors::FloorNumber firstRequestedFloor)
         m_log.Trace("Moving Up [" + std::to_string(currentFloor) + "]", Log::TraceLevel::Verbose);
         m_motionStartMs = SimulationClock::Now();
         m_motionToFloor = currentFloor + 1;
-        if (!Configuration::Simulation::SleepFor(Configuration::Elevator::TimeToReachTheNextFloor()))
+        if (!Configuration::Simulation::SleepFor(TimeToReach(currentFloor + 1)))
           break; // simulation aborted
         m_currentFloor = currentFloor + 1;
         ++m_totalFloorsTravelled;
@@ -298,7 +320,7 @@ void Elevator::Move(const Floors::FloorNumber firstRequestedFloor)
         m_log.Trace("Moving Down [" + std::to_string(currentFloor) + "]", Log::TraceLevel::Verbose);
         m_motionStartMs = SimulationClock::Now();
         m_motionToFloor = currentFloor - 1;
-        if (!Configuration::Simulation::SleepFor(Configuration::Elevator::TimeToReachTheNextFloor()))
+        if (!Configuration::Simulation::SleepFor(TimeToReach(currentFloor - 1)))
           break; // simulation aborted
         m_currentFloor = currentFloor - 1;
         ++m_totalFloorsTravelled;
@@ -398,6 +420,16 @@ void Elevator::SetHomeFloor(const Floors::FloorNumber floor)
   m_go.notify_all();
 }
 
+std::chrono::milliseconds Elevator::TimeToReach(const Floors::FloorNumber nextFloor) const
+{
+  const auto duration = Serves(nextFloor)
+    ? Configuration::Elevator::TimeToReachTheNextFloor()
+    : Configuration::Elevator::TimeToPassAnExpressFloor();
+
+  m_motionDurationMs = duration.count();
+  return duration;
+}
+
 void Elevator::AddEnergy(const double wh)
 {
   m_energyMilliWh += static_cast<std::uint64_t>(std::llround(wh * 1000.0));
@@ -438,7 +470,7 @@ void Elevator::ParkIfIdle()
 
     m_motionStartMs = SimulationClock::Now();
     m_motionToFloor = nextFloor;
-    if (!Configuration::Simulation::SleepFor(Configuration::Elevator::TimeToReachTheNextFloor()))
+    if (!Configuration::Simulation::SleepFor(TimeToReach(nextFloor)))
       break;
 
     m_currentFloor = nextFloor;
@@ -582,5 +614,7 @@ ElevatorSnapshot Elevator::GetSnapshot() const
   snapshot.runs = m_runCounter.load();
   snapshot.doorCycles = m_doorCycles.load();
   snapshot.travelEnergyWh = GetTravelEnergyWh();
+  snapshot.group = m_group;
+  snapshot.motionDurationMs = m_motionDurationMs.load();
   return snapshot;
 }

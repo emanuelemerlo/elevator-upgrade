@@ -74,7 +74,8 @@ builds and runs every program in `tests/`:
   stops at the next floor and its passenger completes the trip with another cabin, a restart applies new settings,
   the same seed gives the same passengers, every strategy serves the same scenario and is archived with its energy,
   idle cabins reach their home floors, impatient passengers take the stairs, two buildings run side by side without
-  sharing passengers, statistics or faults.
+  sharing passengers, statistics or faults, zone layouts are validated, trips are routed through the lobbies and a
+  zoned building with a sky lobby serves everybody with its cabins stopping only on their floors.
 
 ## Web interface
 
@@ -115,12 +116,12 @@ The interface uses a small JSON API, handy for scripts too:
 | `POST /api/call` | `from=F&to=T` |
 | `POST /api/wave` | `kind=morning\|lunch\|evening\|random&count=N` |
 | `POST /api/elevator` | `id=A&outOfOrder=true\|false` |
-| `POST /api/restart` | New run; the parameters have the names of `config.json` (`numberOfElevators`, `numberOfFloors`, `dayDurationSeconds`, `dispatchStrategy`, ...) |
+| `POST /api/restart` | New run; the parameters have the names of `config.json` (`numberOfElevators`, `numberOfFloors`, `dayDurationSeconds`, `dispatchStrategy`, ...), plus `layout` for cabins and zones in one (`8`, `1-20:6, 21-39:6 @ ...`) |
 | `GET /api/runs` | Archive of the completed runs: one flat object per run with settings, scenario and results |
 | `POST /api/runs/clear` | Empties the archive |
-| `POST /api/batch` | Comparison: scenario settings (same names as above) plus `strategies=Optimized,Nearest`, `parkings=Stay,Lobby`, `elevators=3,4` |
+| `POST /api/batch` | Comparison: scenario settings (same names as above) plus `strategies=Optimized,Nearest`, `parkings=Stay,Lobby`, `layouts=8\|1-20:6, 21-39:6` (layouts separated by `\|`) |
 | `POST /api/batch/cancel` | Stops the comparison after the current variant |
-| `POST /api/twin` | Two buildings: scenario settings plus `leftDispatchStrategy`, `leftIdleParking`, `leftNumberOfElevators`, `leftMaxPeople` and the same with `right` |
+| `POST /api/twin` | Two buildings: scenario settings plus `leftDispatchStrategy`, `leftIdleParking`, `leftLayout`, `leftMaxPeople` and the same with `right` |
 | `POST /api/twin/stop` | Back to one building |
 
 In a twin run `GET /api/state` has a `twin` member with the cabins, passengers, statistics and run of the right
@@ -161,7 +162,7 @@ runs (the results table hides it unless asked).
 ### Comparisons and results
 
 *Compare strategies* takes a scenario (by default the passengers of the run on screen) and a set of variants:
-strategies × idle cabins rules × numbers of cabins, at most 24. The variants run one after the other at the highest
+strategies × idle cabins rules × layouts of cabins and zones (one per line), at most 24. The variants run one after the other at the highest
 speed (2000x: a whole day in about 40 seconds) and the results open by themselves at the end. During a comparison
 the interface does not accept commands that would change the runs; you can still watch, change the speed or stop it.
 
@@ -219,10 +220,47 @@ At 2000x the averages match a slower run within a few percent, but the operating
 cabin and the tail (longest wait, stairs) can come out worse: one run out of four gave 52 stairs instead of 0-3. For
 the tails, repeat the run or use a lower speed (360x gives the same averages and no such outliers).
 
-Not modelled yet: real towers split floors into zones served by separate groups (low, middle and high rise, sky
-lobbies, express shafts), with groups of at most about 8 cabins; a single group of 24 cabins over 60 floors is a
-stress test, not a real design. The cabin limit is 26 (identifiers A-Z) and the floor limit 60; above about 40 floors
-or 16 cabins the drawing becomes small (floors of 12 px on a laptop screen) but stays usable.
+A single group of 24 cabins over 60 floors is a stress test, not a real design: real towers split their floors into
+zones (next section). Without zones the cabin limit is 26 (identifiers A-Z), with zones 64; the floor limit is 60.
+Above about 40 floors or 16 cabins the drawing becomes small (floors of 12 px on a laptop screen) but stays usable.
+
+### Zones and sky lobbies
+
+Tall buildings split their floors into zones, each served by its own group of cabins. The layout of the cabins is
+one setting (`zones` and `skyLobbies` in `config.json`, a single *Cabins and zones* field in the interface):
+
+| Layout | Meaning |
+| --- | --- |
+| `8` | One group of 8 cabins serving every floor (the original model). |
+| `1-20:6, 21-39:6` | Two zones served from the lobby (floor 0): 6 cabins for floors 1-20, 6 for floors 21-39. |
+| `1-29:8, 31-45:6, 46-59:6 @ 30:4` | A sky lobby at floor 30, reached from the ground floor by a shuttle group of 4 cabins; the zones above it start from there. |
+
+The zones must cover every floor above the lobby exactly once (a sky lobby floor is not in a zone). The cabins of a
+group are named after it (`A1`, `A2`... `B1`... `S1` for the shuttles) and only stop on its floors: on the others they
+run express, faster (`expressFloorFactor`, 0.35 of the time of a normal floor). The dispatcher plans every trip leg by
+leg: a passenger whose origin and destination are not served by the same group goes to a lobby (the ground floor or
+a sky lobby), gets off, and waits there for a cabin of the next group, keeping his original queue time. The
+statistics count the changes of cabin and the wait at the change; the journey time includes everything. On screen
+the floors a cabin passes express are darker, each group has its colour, and passengers waiting after a change have a
+blue ring.
+
+Measured on the same scenarios (office, one day from 07:00, 2000x):
+
+| Building | Layout | Wait | Journey | 95% wait | Changes | Wait at the change | Energy per trip |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 40 floors, 12 cabins | one group | 10.4 s | 36.4 s | 29.8 s | 0 | | 89 Wh |
+| 40 floors, 12 cabins | 2 zones of 6 | 8.4 s | 34.1 s | 21.9 s | 1835 | 4.5 s | 112 Wh |
+| 60 floors, 24 cabins | one group | 11.2 s | 41.7 s | 33.1 s | 0 | | 116 Wh |
+| 60 floors, 24 cabins | 3 zones of 8 | 7.8 s | 35.9 s | 22.2 s | 3727 | 3.7 s | 168 Wh |
+| 60 floors, 24 cabins | sky lobby at 30 | 6.5 s | 39.0 s | 17.0 s | 9282 | 4.2 s | 158 Wh |
+
+Zones shorten waits and journeys, but in this model they cost energy: the cabins of the high zones travel the whole
+express section, mostly empty on the way down (no regenerative drive is modelled). At 60 floors the sky lobby gives
+the shortest waits but longer journeys than conventional zoning, because most trips need a change: its real
+advantage, fewer shafts and more floor area in very tall towers, is not part of the model. The dispatcher still
+predicts express floors at the normal floor time, so its estimates for long express runs are pessimistic.
+
+### The stairs
 
 ### The stairs
 
@@ -293,7 +331,10 @@ out of range, unknown enum names) stop the program at startup with an explanator
 | `callsGenerator.trafficPattern` | Who travels when (see [Simulated day](#simulated-day)). | `Office` (default), `Residential` or `Uniform` (random trips, as in the original project). |
 | `callsGenerator.stairsPatienceSeconds` | Average patience of a passenger before taking the stairs, simulated seconds. | Default `120`; every passenger gets between half and one and a half times this value. `0` = nobody ever gives up. |
 | `dispatch.dispatchStrategy` | Which cabin answers a call (see [Comparing strategies](#comparing-strategies)). | `Optimized` (default), `Nearest` or `Collective`. |
-| `dispatch.idleParking` | Where an idle cabin waits. | `Stay` (default), `Lobby` or `Spread`. |
+| `dispatch.idleParking` | Where an idle cabin waits. | `Stay` (default), `Lobby` or `Spread` (within the floors of its group). |
+| `zoning.zones` | Zones of the building and their cabins (see [Zones and sky lobbies](#zones-and-sky-lobbies)). | Empty (default): one group of `numberOfElevators` cabins. E.g. `"1-20:6, 21-39:6"`; the cabins are then the ones of the zones. |
+| `zoning.skyLobbies` | Sky lobbies and the cabins of their shuttle from the ground floor. | Empty (default). E.g. `"30:4"`. |
+| `zoning.expressFloorFactor` | Time to pass a floor the cabin does not serve, as a share of `timeToReachTheNextFloorMs`. | Default `0.35`. |
 | `energy.standbyPowerW` | Standby power of every cabin, watts. | Default `200`. |
 | `energy.motorEfficiency` | Efficiency of the motor and gears, 0-1. | Default `0.75`. |
 | `results.runsFilePath` | File of the archive of the completed runs. | Default `runs.jsonl`, next to the program. |
