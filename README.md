@@ -199,6 +199,31 @@ Under the hood the original model keeps its building as global data (`Configurat
 each other. The simulated clock stays shared, and each building has its own stop flag, so one can be stopped while the
 other keeps running. The test suite also runs clean under ThreadSanitizer.
 
+### Large buildings
+
+Measured on a 2-core machine, office traffic, one day from 07:00 at 2000x (a single group of cabins serving every floor):
+
+| Building | Cabins | Trips | Average wait | 95% wait | Stairs | Energy per trip | Dispatch decision (avg / max) | CPU |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 20 floors | 4 / 6 / 8 | 3983 | 11.2 / 9.2 / 8.8 s | 28.6 / 24.5 / 24.5 s | 6 / 0 / 0 | 48 / 50 / 52 Wh | 0.07 / 6 ms | 11% |
+| 40 floors | 8 / 12 / 16 | 7965 | 11.3 / 10.4 / 10.3 s | 30.8 / 29.8 / 29.9 s | 5 / 0 / 0 | 88 / 89 / 91 Wh | 0.1 / 13 ms | 23% |
+| 60 floors | 12 / 18 / 24 | 11883 | 12.1 / 11.4 / 11.3 s | 34.1 / 33.3 / 33.2 s | 5 / 1 / 3 | 111 / 113 / 115 Wh | 0.16 / 15 ms | 38% |
+
+The program scales well: one thread per cabin, a dispatch decision well under a millisecond on average even with
+24 cabins, a full day of a 60-floor building in about 30 seconds. Beyond the first extra cabins the waits barely
+improve, while the energy per trip keeps growing (standby of every cabin): the comparison shows where adding
+cabins stops paying off. With 24 cabins `Nearest` instead of `Optimized` doubles the average wait (26 s) and sends
+about 1250 people to the stairs: the strategy matters more than the number of cabins.
+
+At 2000x the averages match a slower run within a few percent, but the operating system timers sometimes delay a
+cabin and the tail (longest wait, stairs) can come out worse: one run out of four gave 52 stairs instead of 0-3. For
+the tails, repeat the run or use a lower speed (360x gives the same averages and no such outliers).
+
+Not modelled yet: real towers split floors into zones served by separate groups (low, middle and high rise, sky
+lobbies, express shafts), with groups of at most about 8 cabins; a single group of 24 cabins over 60 floors is a
+stress test, not a real design. The cabin limit is 26 (identifiers A-Z) and the floor limit 60; above about 40 floors
+or 16 cabins the drawing becomes small (floors of 12 px on a laptop screen) but stays usable.
+
 ### The stairs
 
 A small tribute to a classic of the early '90s, where little walkers followed each other in single file: every

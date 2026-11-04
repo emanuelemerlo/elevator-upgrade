@@ -691,8 +691,10 @@ function computeLayout(areaX, width, height, floors, elevators, top) {
   const x1 = x0 + buildingWidth;
   const floorHeight = (height - top - bottom) / floors;
   const labelWidth = 38;
-  // Shafts take what they need (up to 60% of the width), the landing with the queues gets the rest.
-  const shaftWidth = clamp(((buildingWidth - labelWidth) * 0.6) / elevators, 26, 110);
+  // Shafts take what they need (up to 60% of the width, more in a crowded building: a landing of at least 60 px
+  // must still fit), the landing with the queues gets the rest.
+  const maxShaft = (buildingWidth - labelWidth - 60 - 16) / elevators;
+  const shaftWidth = Math.min(maxShaft, clamp(((buildingWidth - labelWidth) * 0.6) / elevators, 26, 110));
   const landingX = x0 + labelWidth;
   const landingWidth = Math.max(60, buildingWidth - labelWidth - shaftWidth * elevators - 16);
   const shaftsX = landingX + landingWidth + 8;
