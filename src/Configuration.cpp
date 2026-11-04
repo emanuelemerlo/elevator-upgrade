@@ -1,5 +1,6 @@
 #include "Configuration.h"
 #include "SimulationClock.h"
+#include "BuildingContext.h"
 
 #include <algorithm>
 #include <cctype>
@@ -13,7 +14,8 @@
 
 namespace
 {
-  Configuration::Settings g_settings;
+  // The settings belong to the building of the calling thread (see BuildingContext).
+  Configuration::Settings& Settings() { return Context::Current().settings; }
 
   std::string ReadFile(const std::string& path)
   {
@@ -231,9 +233,9 @@ bool Configuration::LoadFromFile(const std::string& path)
   if (json.empty())
     throw std::runtime_error("Configuration file '" + path + "' not found or empty");
 
-  Settings settings = g_settings;
+  Settings settings = ::Settings();
   ParseJson(json, settings);
-  g_settings = settings;
+  ::Settings() = settings;
   return true;
 }
 
@@ -325,12 +327,12 @@ void Configuration::ParseJson(const std::string& json, Settings& settings)
 void Configuration::Apply(const Settings& settings)
 {
   Validate(settings);
-  g_settings = settings;
+  ::Settings() = settings;
 }
 
 const Configuration::Settings& Configuration::Get()
 {
-  return g_settings;
+  return ::Settings();
 }
 
 unsigned int Configuration::Building::NumberOfElevators()
@@ -432,8 +434,8 @@ bool Configuration::Log::WriteToFile()
 
 void Configuration::Log::Override(const ILog::LogType logType, const ILog::TraceLevel minimumLevel)
 {
-  g_settings.defaultLogType = logType;
-  g_settings.traceLevel = std::max(g_settings.traceLevel, minimumLevel);
+  ::Settings().defaultLogType = logType;
+  ::Settings().traceLevel = std::max(::Settings().traceLevel, minimumLevel);
 }
 
 Configuration::Dispatch::Strategy Configuration::Dispatch::DispatchStrategy()

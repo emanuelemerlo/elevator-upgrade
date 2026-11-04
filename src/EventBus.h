@@ -18,6 +18,7 @@ struct SimulationEvent
 {
   std::uint64_t sequence{ 0U };
   long long simulatedMs{ 0 };   // simulated time since the start of the run
+  std::string building;          // name of the building of the thread that published it ("" = default building)
   std::string type;
   std::string data;             // JSON object with the details of the event
 };

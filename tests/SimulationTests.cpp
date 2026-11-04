@@ -17,6 +17,8 @@
 #include "Statistics.h"
 #include "RunArchive.h"
 #include "Scenario.h"
+#include "BuildingContext.h"
+#include <algorithm>
 
 #include <chrono>
 #include <functional>
@@ -436,6 +438,87 @@ namespace
   }
 }
 
+namespace
+{
+  void Twin()
+  {
+    std::cout << "Two buildings side by side on the same clock" << std::endl;
+
+    auto left = BaseSettings();
+    left.dayStartHour = 8.0;
+    left.numberOfCalls = 120;
+    left.averageCallsPerDay = 3000;
+    left.randomSeed = 99;
+    left.dayDurationSeconds = 864.0 / 4.0;   // 400x
+    auto right = left;
+    right.numberOfElevators = 2;
+    right.dispatchStrategy = Configuration::Dispatch::Strategy::Nearest;
+
+    Simulation main;
+    Simulation twin("twin");
+    main.SetPauseWhenFinished(false);
+    twin.SetPauseWhenFinished(false);
+    main.SetPairId("pair-test");
+    twin.SetPairId("pair-test");
+
+    main.Restart(left);
+    twin.Restart(right, "", false);
+
+    // Each building sees its own settings, also from the threads of the test.
+    {
+      Context::Scope scope(twin.GetContext());
+      Check(Configuration::Building::NumberOfElevators() == 2U, "the twin building has its own settings");
+    }
+    Check(Configuration::Building::NumberOfElevators() == 3U, "the main building keeps its settings");
+
+    // A fault in the twin does not touch the main building.
+    twin.SetOutOfOrder("B", true);
+    {
+      auto lock = main.Lock();
+      bool anyOut = false;
+      for (const auto& elevator : main.GetManagement()->GetElevatorSnapshots())
+        anyOut = anyOut || elevator.outOfOrder;
+      Check(!anyOut, "a fault in one building stays in that building");
+    }
+    twin.SetOutOfOrder("B", false);
+
+    const auto bothDone = WaitFor([&main, &twin]()
+      {
+        main.CheckFinished();
+        twin.CheckFinished();
+        return main.Archived() && twin.Archived();
+      }, std::chrono::seconds(60));
+    Check(bothDone, "both buildings finish and are archived");
+
+    StatisticsSnapshot mainStatistics;
+    StatisticsSnapshot twinStatistics;
+    mainStatistics = Statistics::GetSnapshot();
+    {
+      Context::Scope scope(twin.GetContext());
+      twinStatistics = Statistics::GetSnapshot();
+    }
+
+    Check(mainStatistics.queuedCalls == 120U && twinStatistics.queuedCalls == 120U, "the same 120 passengers came to both buildings");
+    Check(mainStatistics.elevatorAssignments.size() == 3U && twinStatistics.elevatorAssignments.size() <= 2U,
+      "each building counts its own cabins");
+    Check(mainStatistics.completedPassengers + mainStatistics.abandonedCalls == 120U &&
+      twinStatistics.completedPassengers + twinStatistics.abandonedCalls == 120U, "both buildings served everybody");
+
+    const auto runs = RunArchive::All();
+    const auto paired = std::count_if(runs.begin(), runs.end(),
+      [](const std::string& run) { return run.find("\"pair\":\"pair-test\"") != std::string::npos; });
+    Check(paired == 2, "the two runs are archived as a pair");
+
+    std::size_t twinEvents = 0U;
+    for (const auto& event : EventBus::Since(0U, 100000U))
+      twinEvents += event.building == "twin" ? 1U : 0U;
+    Check(twinEvents > 0U, "the events of the twin are tagged with its name");
+
+    twin.Stop();
+    main.Stop();
+  }
+}
+
 int main()
 {
   Clock();
@@ -446,6 +529,7 @@ int main()
   Strategies();
   Parking();
   Stairs();
+  Twin();
 
   LogBase::FlushPendingMessages();
 

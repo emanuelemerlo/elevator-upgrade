@@ -48,6 +48,12 @@ const ui = {
   showHandsOn: $('showHandsOn'),
   runsCharts: $('runsCharts'),
   runsTable: $('runsTable'),
+  numbers: $('numbers'),
+  twinTable: $('twinTable'),
+  twinDialog: $('twinDialog'),
+  twinForm: $('twinForm'),
+  twinError: $('twinError'),
+  twinStop: $('twinStop'),
   history: $('history'),
   decisionTitle: $('decisionTitle'),
   decision: $('decision'),
@@ -78,7 +84,7 @@ const history = [];        // { t: simulated ms, waiting: count }
 
 let selectedFloor = null;  // origin floor of a call being placed
 let hover = null;          // { kind: 'floor' | 'cabin', floor, cabin }
-let layout = null;         // geometry of the last drawn frame, for hit testing
+let layouts = [];          // geometry of every building of the last drawn frame, for hit testing
 
 let decisionPinnedUntil = 0;
 let decisionShownAt = 0;
@@ -313,6 +319,8 @@ function describe(event) {
         : null;
     case 'batch':
       return { text: `Comparison, variant ${d.index + 1} of ${d.total}: ${d.label}.` };
+    case 'twinFinished':
+      return { text: 'Both buildings are done: the two results are saved side by side.', cls: 'good' };
     case 'batchDone':
       return { text: d.cancelled ? `Comparison stopped after ${d.completed} of ${d.total} variants.` : `Comparison done: ${d.total} variants.`, cls: 'good' };
     default:
@@ -327,9 +335,16 @@ function stairsInFeed() {
   return stairsReported <= 5;
 }
 
+// Events that are the same in both buildings of a twin run are reported once, from the left building.
+const SHARED_EVENTS = ['call', 'wave', 'start', 'control', 'stop'];
+
 function addToFeed(event) {
+  if (event.b === 'twin' && SHARED_EVENTS.includes(event.type)) return;
   const entry = describe(event);
   if (!entry) return;
+  if (state && state.twin && !SHARED_EVENTS.includes(event.type) && event.type !== 'twinFinished') {
+    entry.text = `${event.b === 'twin' ? 'Right' : 'Left'}: ${entry.text}`;
+  }
 
   const item = document.createElement('li');
   const time = document.createElement('time');
@@ -363,8 +378,9 @@ function showDecision(event) {
   decisionShownAt = now;
   if (mine) decisionPinnedUntil = now + 5000;
 
+  const side = state && state.twin ? `${event.b === 'twin' ? 'Right' : 'Left'}: ` : '';
   ui.decisionTitle.textContent =
-    `${mine ? 'Your call' : `Call #${d.id}`}, floor ${d.from} to ${d.to}: cabin ${d.elevator}, pickup in ${seconds(d.pickupMs)}.`;
+    `${side}${mine ? 'Your call' : `Call #${d.id}`}, floor ${d.from} to ${d.to}: cabin ${d.elevator}, pickup in ${seconds(d.pickupMs)}.`;
 
   const optimized = !d.strategy || d.strategy === 'Optimized';
   const scoreOf = (c) => (c.score !== undefined ? c.score : c.costMs);
@@ -411,10 +427,11 @@ function anyDialogOpen() {
 
 function handleEvent(event) {
   if (event.type === 'assign') showDecision(event);
-  if (event.type === 'stairs') addWalker(event.data);
+  if (event.type === 'stairs') addWalker(event.data, event.b || '');
   if (event.type === 'batchDone' && !event.data.cancelled) openRuns(lastBatchScenario);
   if (event.type === 'batch') lastBatchScenario = null;
-  if (event.type === 'start') {
+  if (event.type === 'twinFinished') openRuns(state ? state.run.scenario : null);
+  if (event.type === 'start' && !event.b) {
     stairsReported = 0;
     walkers.length = 0;
     lastWalkerStart.clear();
@@ -428,7 +445,7 @@ function handleEvent(event) {
   }
   addToFeed(event);
   // A run of a comparison ends quietly: the results open when the whole comparison is done.
-  if (event.type === 'finished' && !event.data.batch && !anyDialogOpen()) openReport(true);
+  if (event.type === 'finished' && !event.data.batch && !event.data.pair && !anyDialogOpen()) openReport(true);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -438,7 +455,7 @@ function recordHistory() {
   const t = state.clock.nowMs;
   const last = history[history.length - 1];
   if (last && t - last.t < 30000 && t >= last.t) return;
-  history.push({ t, waiting: state.waiting.length });
+  history.push({ t, waiting: state.waiting.length, twin: state.twin ? state.twin.waiting.length : null });
   while (history.length && history[0].t < t - HISTORY_WINDOW_MS) history.shift();
 }
 
@@ -476,10 +493,16 @@ function updatePanel() {
   ui.statWhPerTrip.textContent = stats.completed ? `${stats.whPerTrip.toFixed(1)} Wh` : '–';
   ui.statEnergy.title = `Motors and doors ${(stats.travelWh / 1000).toFixed(2)} kWh, standby ${(stats.standbyWh / 1000).toFixed(2)} kWh`;
 
+  updateTwinTable();
+
   const run = state.run;
   const parking = { Stay: 'idle cabins stay where they stop', Lobby: 'idle cabins go back to the lobby', Spread: 'idle cabins spread along the building' };
   ui.runInfo.innerHTML = '';
-  ui.runInfo.append(`${run.strategy} dispatch, ${parking[run.parking] || run.parking}. Scenario ${run.scenario} (seed ${run.seed}). `);
+  if (state.twin) {
+    ui.runInfo.append(`Same passengers in both buildings: scenario ${run.scenario} (seed ${run.seed}). Green is the better side. `);
+  } else {
+    ui.runInfo.append(`${run.strategy} dispatch, ${parking[run.parking] || run.parking}. Scenario ${run.scenario} (seed ${run.seed}). `);
+  }
   if (run.interventions > 0) {
     const handsOn = document.createElement('span');
     handsOn.className = 'hands-on';
@@ -490,7 +513,7 @@ function updatePanel() {
   const batch = run.batch;
   ui.batchBanner.hidden = !batch.running;
   if (batch.running) ui.batchText.textContent = `Comparing ${batch.index + 1} of ${batch.total}: ${batch.label}`;
-  for (const button of document.querySelectorAll('[data-wave], #newRunButton, #compareButton')) button.disabled = batch.running;
+  for (const button of document.querySelectorAll('[data-wave], #newRunButton, #compareButton, #twinButton')) button.disabled = batch.running;
 
   updateProfileMarker();
   drawHistory();
@@ -498,6 +521,48 @@ function updatePanel() {
   if (decisionWaiting && performance.now() - decisionShownAt >= 1200 && performance.now() >= decisionPinnedUntil) {
     showDecision(decisionWaiting);
   }
+}
+
+const TWIN_ROWS = [
+  { title: 'Waiting now', value: (b) => b.waiting.length, format: String },
+  { title: 'Delivered', value: (b) => b.stats.completed, format: String, higher: true },
+  { title: 'Average wait', value: (b) => (b.stats.boarded ? b.stats.avgWaitMs : null), format: shortDuration },
+  { title: '95% wait less', value: (b) => (b.stats.boarded ? b.stats.p95WaitMs : null), format: shortDuration },
+  { title: 'Longest wait', value: (b) => (b.stats.boarded ? b.stats.maxWaitMs : null), format: shortDuration },
+  { title: 'Took the stairs', value: (b) => b.stats.stairs, format: String },
+  { title: 'Energy', value: (b) => b.stats.energyWh, format: (v) => `${(v / 1000).toFixed(v < 10000 ? 2 : 1)} kWh` },
+  { title: 'Energy per trip', value: (b) => (b.stats.completed ? b.stats.whPerTrip : null), format: (v) => `${v.toFixed(1)} Wh` },
+];
+
+function updateTwinTable() {
+  const twin = Boolean(state.twin);
+  ui.numbers.hidden = twin;
+  ui.twinTable.hidden = !twin;
+  ui.twinStop.hidden = !twin;
+  if (!twin) return;
+
+  const head = document.createElement('thead');
+  head.innerHTML = '<tr><th></th><th>Left</th><th>Right</th></tr>';
+  const body = document.createElement('tbody');
+
+  for (const row of TWIN_ROWS) {
+    const left = row.value(state);
+    const right = row.value(state.twin);
+    const tr = document.createElement('tr');
+    const title = document.createElement('td');
+    title.textContent = row.title;
+    tr.append(title);
+
+    for (const [value, other] of [[left, right], [right, left]]) {
+      const td = document.createElement('td');
+      td.textContent = value === null ? '–' : row.format(value);
+      if (value !== null && other !== null && value !== other && (row.higher ? value > other : value < other)) td.className = 'better';
+      tr.append(td);
+    }
+    body.append(tr);
+  }
+
+  ui.twinTable.replaceChildren(head, body);
 }
 
 function drawProfile() {
@@ -554,7 +619,7 @@ function drawHistory() {
 
   const end = state.clock.nowMs;
   const start = end - HISTORY_WINDOW_MS;
-  const max = Math.max(4, ...history.map((h) => h.waiting));
+  const max = Math.max(4, ...history.map((h) => Math.max(h.waiting, h.twin || 0)));
   const x = (t) => ((t - start) / HISTORY_WINDOW_MS) * width;
   const y = (v) => height - 4 - (v / max) * (height - 10);
 
@@ -572,9 +637,20 @@ function drawHistory() {
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
+  // The right building of a twin run, as a dashed line.
+  const twinPoints = history.filter((point) => point.twin !== null);
+  if (twinPoints.length > 1) {
+    ctx.beginPath();
+    twinPoints.forEach((point, index) => (index ? ctx.lineTo(x(point.t), y(point.twin)) : ctx.moveTo(x(point.t), y(point.twin))));
+    ctx.strokeStyle = '#1d2833';
+    ctx.setLineDash([4, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
   ctx.fillStyle = '#4b5967';
   ctx.font = '11px Barlow, sans-serif';
-  ctx.fillText(`max ${max}`, 4, 11);
+  ctx.fillText(twinPoints.length > 1 ? `max ${max}, left solid, right dashed` : `max ${max}`, 4, 11);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -607,12 +683,11 @@ function waitColor(ms) {
   return mixColor('#f2a93b', '#d1452f', clamp((ms - 20000) / 25000, 0, 1));
 }
 
-function computeLayout(width, height, floors, elevators) {
-  const top = 54;
+function computeLayout(areaX, width, height, floors, elevators, top) {
   const bottom = 14;
-  // The building is centred and never wider than it needs to be.
+  // The building is centred in its area and never wider than it needs to be.
   const buildingWidth = Math.min(width - 2 * Math.max(12, width * 0.04), 220 + elevators * 120);
-  const x0 = (width - buildingWidth) / 2;
+  const x0 = areaX + (width - buildingWidth) / 2;
   const x1 = x0 + buildingWidth;
   const floorHeight = (height - top - bottom) / floors;
   const labelWidth = 38;
@@ -628,14 +703,14 @@ function floorTop(geometry, position) {
   return geometry.top + (geometry.floors - 1 - position) * geometry.floorHeight;
 }
 
-function cabinPosition(elevator, now) {
+function cabinPosition(elevator, now, building) {
   if (elevator.motionTo === undefined) return elevator.floor;
-  const progress = clamp((now - elevator.motionStartMs) / state.building.floorMs, 0, 1);
+  const progress = clamp((now - elevator.motionStartMs) / building.floorMs, 0, 1);
   return elevator.floor + (elevator.motionTo - elevator.floor) * progress;
 }
 
-function doorOpening(elevator, now) {
-  const doorMs = Math.max(1, state.building.doorMs);
+function doorOpening(elevator, now, building) {
+  const doorMs = Math.max(1, building.doorMs);
   const progress = clamp((now - elevator.doorsStartMs) / doorMs, 0, 1);
   switch (elevator.doors) {
     case 'open': return 1;
@@ -737,10 +812,43 @@ function drawBuilding() {
   updateSky(hour);
   drawSkyDetails(ctx, width, hour);
 
-  const { floors, elevators: elevatorCount, maxPeople } = state.building;
-  const g = computeLayout(width, height, floors, elevatorCount);
-  layout = g;
   const night = nightAmount(hour);
+  const entries = buildingsOf(state);
+  const areaWidth = width / entries.length;
+  layouts = entries.map((entry, index) =>
+    drawOneBuilding(ctx, entry, index * areaWidth, areaWidth, height, now, night, entries.length > 1));
+
+  // Ground.
+  ctx.fillStyle = '#6e7780';
+  const groundY = floorTop(layouts[0], 0) + layouts[0].floorHeight;
+  ctx.fillRect(0, groundY, width, height - groundY);
+}
+
+/** The buildings to draw: the main one, and the twin when a twin run is on. */
+function buildingsOf(current) {
+  const entries = [{ key: '', side: 'Left', data: current }];
+  if (current.twin) entries.push({ key: 'twin', side: 'Right', data: current.twin });
+  return entries;
+}
+
+function variantLabel(data) {
+  const parking = { Stay: 'cabins stay', Lobby: 'back to lobby', Spread: 'spread' }[data.run.parking] || data.run.parking;
+  return `${data.run.strategy}, ${parking}, ${data.building.elevators} cabins of ${data.building.maxPeople}`;
+}
+
+function drawOneBuilding(ctx, entry, areaX, areaWidth, height, now, night, twin) {
+  const b = entry.data;
+  const { floors, elevators: elevatorCount, maxPeople } = b.building;
+  const g = computeLayout(areaX, areaWidth, height, floors, elevatorCount, twin ? 74 : 54);
+  g.key = entry.key;
+
+  if (twin) {
+    ctx.fillStyle = night > 0.5 ? '#eef1f4' : '#1d2833';
+    ctx.font = '600 15px "Barlow Condensed", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`${entry.side}: ${variantLabel(b)}`, (g.x0 + g.x1) / 2, 6);
+  }
 
   // Facade and roof.
   ctx.fillStyle = COLORS.facade;
@@ -756,12 +864,13 @@ function drawBuilding() {
   }
 
   const waitingByFloor = new Map();
-  for (const person of state.waiting) {
+  for (const person of b.waiting) {
     if (!waitingByFloor.has(person.from)) waitingByFloor.set(person.from, []);
     waitingByFloor.get(person.from).push(person);
   }
 
   const elapsedSinceState = now - state.clock.nowMs;
+  const width = areaX + areaWidth;
   const wall = mixColor(COLORS.wall, COLORS.wallNight, night * 0.8);
 
   for (let floor = 0; floor < floors; floor += 1) {
@@ -775,7 +884,7 @@ function drawBuilding() {
     if (selectedFloor === floor) {
       ctx.fillStyle = COLORS.select;
       ctx.fillRect(g.x0, y, g.landingX + g.landingWidth - g.x0, h);
-    } else if (hover && hover.kind === 'floor' && hover.floor === floor) {
+    } else if (hover && hover.kind === 'floor' && hover.floor === floor && (selectedFloor !== null || hover.building === g.key)) {
       ctx.fillStyle = selectedFloor !== null ? COLORS.select : COLORS.hover;
       ctx.fillRect(g.x0, y, g.landingX + g.landingWidth - g.x0, h);
     }
@@ -823,11 +932,11 @@ function drawBuilding() {
     if (floor > 0) drawTriangle(ctx, bx, y + h * 0.7, triangle, false, goingDown ? COLORS.lamp : '#c3cad1');
   }
 
-  drawWalkers(ctx, g);
+  drawWalkers(ctx, g, entry.key);
 
   // Shafts and cabins.
   g.cabins = [];
-  state.elevators.forEach((elevator, index) => {
+  b.elevators.forEach((elevator, index) => {
     const shaftX = g.shaftsX + index * g.shaftWidth + g.shaftWidth * 0.1;
     const shaftW = g.shaftWidth * 0.8;
     const shaftTop = g.top;
@@ -848,7 +957,7 @@ function drawBuilding() {
       ctx.fill();
     }
 
-    const position = cabinPosition(elevator, now);
+    const position = cabinPosition(elevator, now, b.building);
     const cabinH = g.floorHeight * 0.84;
     const cabinW = shaftW * 0.86;
     const cx = shaftX + (shaftW - cabinW) / 2;
@@ -869,7 +978,7 @@ function drawBuilding() {
     }
 
     // Doors sliding from the middle.
-    const opening = doorOpening(elevator, now);
+    const opening = doorOpening(elevator, now, b.building);
     const panel = (cabinW / 2) * (1 - opening);
     const doorGradient = ctx.createLinearGradient(cx, 0, cx + cabinW, 0);
     doorGradient.addColorStop(0, COLORS.cabinDark);
@@ -908,7 +1017,7 @@ function drawBuilding() {
       ctx.restore();
     }
 
-    if (hover && hover.kind === 'cabin' && hover.cabin === elevator.id) {
+    if (hover && hover.kind === 'cabin' && hover.cabin === elevator.id && hover.building === g.key) {
       ctx.strokeStyle = COLORS.lamp;
       ctx.lineWidth = 2;
       ctx.strokeRect(cx - 2, cy - 2, cabinW + 4, cabinH + 4);
@@ -938,9 +1047,7 @@ function drawBuilding() {
     }
   });
 
-  // Ground.
-  ctx.fillStyle = '#6e7780';
-  ctx.fillRect(0, floorTop(g, 0) + g.floorHeight, width, height);
+  return g;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -953,12 +1060,13 @@ const MAX_WALKERS = 60;
 const walkers = [];
 const lastWalkerStart = new Map();
 
-function addWalker(data) {
+function addWalker(data, building) {
   if (walkers.length >= MAX_WALKERS) return;
   const now = performance.now();
-  const start = Math.max(now, (lastWalkerStart.get(data.floor) || 0) + WALK_GAP_MS);
-  lastWalkerStart.set(data.floor, start);
-  walkers.push({ floor: data.floor, start, mine: myCalls.has(data.id), color: waitColor(data.waitMs) });
+  const key = `${building}|${data.floor}`;
+  const start = Math.max(now, (lastWalkerStart.get(key) || 0) + WALK_GAP_MS);
+  lastWalkerStart.set(key, start);
+  walkers.push({ building, floor: data.floor, start, mine: myCalls.has(data.id), color: waitColor(data.waitMs) });
 }
 
 function stairsDoor(g, floor) {
@@ -992,11 +1100,12 @@ function drawStairsDoor(ctx, door) {
   }
 }
 
-function drawWalkers(ctx, g) {
+function drawWalkers(ctx, g, building) {
   const now = performance.now();
 
   for (let index = walkers.length - 1; index >= 0; index -= 1) {
     const walker = walkers[index];
+    if (walker.building !== building) continue;
     if (walker.floor >= g.floors || now - walker.start > WALK_MS) {
       walkers.splice(index, 1);
       continue;
@@ -1027,20 +1136,22 @@ function frame() {
 // Interaction with the building
 
 function hitTest(event) {
-  if (!layout || !state) return null;
+  if (!layouts.length || !state) return null;
   const rect = ui.canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
 
-  for (const cabin of layout.cabins) {
-    if (x >= cabin.x - 3 && x <= cabin.x + cabin.w + 3 && y >= cabin.y - 3 && y <= cabin.y + cabin.h + 3) {
-      return { kind: 'cabin', cabin: cabin.id, outOfOrder: cabin.outOfOrder };
+  for (const g of layouts) {
+    for (const cabin of g.cabins) {
+      if (x >= cabin.x - 3 && x <= cabin.x + cabin.w + 3 && y >= cabin.y - 3 && y <= cabin.y + cabin.h + 3) {
+        return { kind: 'cabin', building: g.key, cabin: cabin.id, outOfOrder: cabin.outOfOrder };
+      }
     }
-  }
 
-  if (x >= layout.x0 && x <= layout.landingX + layout.landingWidth && y >= layout.top) {
-    const floor = layout.floors - 1 - Math.floor((y - layout.top) / layout.floorHeight);
-    if (floor >= 0 && floor < layout.floors) return { kind: 'floor', floor };
+    if (x >= g.x0 && x <= g.landingX + g.landingWidth && y >= g.top) {
+      const floor = g.floors - 1 - Math.floor((y - g.top) / g.floorHeight);
+      if (floor >= 0 && floor < g.floors) return { kind: 'floor', building: g.key, floor };
+    }
   }
 
   return null;
@@ -1072,16 +1183,17 @@ ui.canvas.addEventListener('click', async (event) => {
 
   try {
     if (hit.kind === 'cabin') {
-      await post('/api/elevator', { id: hit.cabin, outOfOrder: String(!hit.outOfOrder) });
+      await post('/api/elevator', { id: hit.cabin, outOfOrder: String(!hit.outOfOrder), building: hit.building });
+      const where = state.twin ? ` of the ${hit.building === 'twin' ? 'right' : 'left'} building` : '';
       setHint(hit.outOfOrder
-        ? `Cabin ${hit.cabin} is going back into service.`
-        : `Cabin ${hit.cabin} stops at the next floor and lets everybody out. Click it again to repair it.`);
+        ? `Cabin ${hit.cabin}${where} is going back into service.`
+        : `Cabin ${hit.cabin}${where} stops at the next floor and lets everybody out. Click it again to repair it.`);
       return;
     }
 
     if (selectedFloor === null) {
       selectedFloor = hit.floor;
-      setHint(`Calling from floor ${hit.floor}: now click the floor to go to (Esc to cancel).`, true);
+      setHint(`Calling from floor ${hit.floor}${state.twin ? ' (in both buildings)' : ''}: now click the floor to go to (Esc to cancel).`, true);
       return;
     }
 
@@ -1092,8 +1204,9 @@ ui.canvas.addEventListener('click', async (event) => {
 
     const from = selectedFloor;
     cancelSelection();
+    // In a twin run the same passenger is added to both buildings.
     const answer = await post('/api/call', { from, to: hit.floor });
-    myCalls.add(answer.id);
+    for (const id of answer.ids || [answer.id]) myCalls.add(id);
   } catch (error) {
     setHint(error.message, true);
   }
@@ -1243,7 +1356,13 @@ async function openReport(finished) {
   try {
     const response = await fetch('/api/report', { cache: 'no-store' });
     const report = await response.json();
-    ui.reportText.textContent = report.lines.join('\n');
+    let text = report.lines.join('\n');
+    if (state && state.twin) {
+      const twinResponse = await fetch('/api/report?building=twin', { cache: 'no-store' });
+      const twinReport = await twinResponse.json();
+      text = `Left building: ${variantLabel(state)}\n\n${text}\n\n\nRight building: ${variantLabel(state.twin)}\n\n${twinReport.lines.join('\n')}`;
+    }
+    ui.reportText.textContent = text;
     ui.reportNote.textContent = finished
       ? 'Everybody has arrived. This is the report the console version prints at the end of a run.'
       : 'The report of the run so far, as the console version prints it at the end.';
@@ -1338,6 +1457,53 @@ ui.compareForm.addEventListener('submit', async (event) => {
     ui.compareError.textContent = error.message;
   }
 });
+
+// ---------------------------------------------------------------------------------------------
+// Two buildings side by side
+
+$('twinButton').addEventListener('click', async () => {
+  await loadConfig();
+  const s = config.settings;
+  const form = ui.twinForm.elements;
+  form.numberOfFloors.value = s.numberOfFloors;
+  form.averageCallsPerDay.value = s.averageCallsPerDay;
+  form.trafficPattern.value = s.trafficPattern;
+  form.numberOfSimulationDays.value = s.numberOfSimulationDays;
+  form.dayStartHour.value = s.dayStartHour;
+  form.randomSeed.value = state ? state.run.seed : s.randomSeed;
+  form.leftDispatchStrategy.value = s.dispatchStrategy;
+  form.leftIdleParking.value = s.idleParking;
+  form.leftNumberOfElevators.value = s.numberOfElevators;
+  form.leftMaxPeople.value = s.maxPeople;
+  form.rightDispatchStrategy.value = s.dispatchStrategy === 'Optimized' ? 'Nearest' : 'Optimized';
+  form.rightIdleParking.value = s.idleParking;
+  form.rightNumberOfElevators.value = s.numberOfElevators;
+  form.rightMaxPeople.value = s.maxPeople;
+  ui.twinError.textContent = '';
+  ui.twinDialog.showModal();
+});
+
+$('twinCancel').addEventListener('click', () => ui.twinDialog.close());
+
+ui.twinForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const params = Object.fromEntries(new FormData(ui.twinForm).entries());
+  params.randomSeed = params.randomSeed || '0';
+  // Keep the speed of the run on screen, at most the one where a day lasts 4 minutes, to watch it.
+  params.dayDurationSeconds = String(DAY_MS / 1000 / Math.min(state ? state.clock.speed : 60, 360));
+
+  try {
+    await post('/api/twin', params);
+    ui.twinDialog.close();
+    history.length = 0;
+    myCalls.clear();
+    cancelSelection();
+  } catch (error) {
+    ui.twinError.textContent = error.message;
+  }
+});
+
+ui.twinStop.addEventListener('click', () => post('/api/twin/stop', {}).catch((error) => setHint(error.message, true)));
 
 $('batchCancel').addEventListener('click', () => post('/api/batch/cancel', {}).catch(() => {}));
 

@@ -9,18 +9,31 @@
 #include "Statistics.h"
 #include "RunArchive.h"
 #include "Scenario.h"
+#include "BuildingContext.h"
 
 #include <chrono>
 #include <ctime>
 
 Simulation::Simulation() :
+  m_context(&Context::Default()),
   m_random(static_cast<unsigned int>(std::chrono::system_clock::now().time_since_epoch().count())),
-  m_userSettings(Configuration::Get())
+  m_userSettings(Context::Default().settings)
 {
+}
+
+Simulation::Simulation(const std::string& buildingName) :
+  m_ownedContext(std::make_unique<BuildingContext>(buildingName)),
+  m_context(m_ownedContext.get()),
+  m_random(static_cast<unsigned int>(std::chrono::system_clock::now().time_since_epoch().count())),
+  m_userSettings(Context::Default().settings)
+{
+  // A new building starts from the settings of the main one.
+  m_context->settings = Context::Default().settings;
 }
 
 Configuration::Settings Simulation::UserSettings()
 {
+  Context::Scope scope(m_context);
   auto lock = Lock();
   return m_userSettings;
 }
@@ -34,10 +47,15 @@ Simulation::~Simulation()
   Stop();
 }
 
-void Simulation::Start()
+void Simulation::Start(const bool leader)
 {
+  Context::Scope scope(m_context);
   auto lock = Lock();
+  StartLocked(leader);
+}
 
+void Simulation::StartLocked(const bool leader)
+{
   if (Running())
     return;
 
@@ -46,10 +64,14 @@ void Simulation::Start()
   m_generator.reset();
   Floors::GetPeople().Clear();
   Statistics::Reset();
-  EventBus::Clear();
-  Call::ResetIds();
+  m_context->aborted = false;
 
-  Configuration::Simulation::StartClock();
+  if (leader)
+  {
+    EventBus::Clear();
+    Call::ResetIds();
+    Configuration::Simulation::StartClock();
+  }
 
   m_management = std::make_unique<Management>(Configuration::Building::NumberOfElevators());
   m_generator = std::make_unique<PeopleCallsGenerator>(*m_management);
@@ -82,6 +104,7 @@ void Simulation::Start()
 
 void Simulation::Stop()
 {
+  Context::Scope scope(m_context);
   auto lock = Lock();
   StopLocked();
 }
@@ -91,10 +114,12 @@ void Simulation::StopLocked()
   if (m_stopped || m_management == nullptr)
     return;
 
-  // Order matters: the cabins are asked to stop first, then the clock is aborted so that every sleep
-  // (also a paused one) returns at once, then the threads are joined.
+  // Order matters: the cabins are asked to stop first, then the building is aborted so that every sleep of its
+  // threads (also on a paused clock) returns at once, then the threads are joined. The clock keeps running for
+  // the other buildings, if any.
   m_management->RequestShutdown();
-  SimulationClock::Abort();
+  m_context->aborted = true;
+  SimulationClock::WakeAll();
 
   m_generator->Shutdown();
   m_management->Shutdown();
@@ -103,10 +128,11 @@ void Simulation::StopLocked()
   EventBus::Publish("stop", Json::Writer::Object());
 }
 
-void Simulation::Restart(const Configuration::Settings& settings, const std::string& batchId)
+void Simulation::Restart(const Configuration::Settings& settings, const std::string& batchId, const bool leader)
 {
   Configuration::Validate(settings);
 
+  Context::Scope scope(m_context);
   auto lock = Lock();
   StopLocked();
   m_batchId = batchId;
@@ -118,11 +144,12 @@ void Simulation::Restart(const Configuration::Settings& settings, const std::str
   m_management.reset();
 
   Configuration::Apply(settings);
-  Start();
+  StartLocked(leader);
 }
 
 bool Simulation::Finished() const
 {
+  Context::Scope scope(m_context);
   return GeneratorFinished() && Statistics::ActiveCalls() == 0U;
 }
 
@@ -138,6 +165,7 @@ unsigned int Simulation::GeneratedCalls() const
 
 std::shared_ptr<Call> Simulation::AddCall(const Floors::FloorNumber from, const Floors::FloorNumber to)
 {
+  Context::Scope scope(m_context);
   auto lock = Lock();
 
   if (!Running())
@@ -155,22 +183,47 @@ std::shared_ptr<Call> Simulation::AddCall(const Floors::FloorNumber from, const 
 
 unsigned int Simulation::AddWave(const TrafficProfile::Wave wave, const unsigned int count)
 {
+  return AddTrips(MakeWave(wave, count));
+}
+
+std::vector<ScheduledCall> Simulation::MakeWave(const TrafficProfile::Wave wave, const unsigned int count)
+{
+  Context::Scope scope(m_context);
+  auto lock = Lock();
+
+  std::vector<ScheduledCall> trips;
+  std::uniform_real_distribution<double> uniform(0.0, 1.0);
+
+  for (auto index = 0U; index < count; ++index)
+  {
+    const auto trip = TrafficProfile::PickTrip(m_random, wave, Configuration::CallsGenerator::TrafficPattern());
+
+    ScheduledCall call;
+    call.from = trip.first;
+    call.to = trip.second;
+    call.patienceMs = Scenario::PatienceFor(uniform(m_random));
+    trips.push_back(call);
+  }
+
+  return trips;
+}
+
+unsigned int Simulation::AddTrips(const std::vector<ScheduledCall>& trips)
+{
+  Context::Scope scope(m_context);
   auto lock = Lock();
 
   if (!Running())
     return 0U;
 
   unsigned int added = 0U;
-  for (auto index = 0U; index < count; ++index)
+  for (const auto& trip : trips)
   {
-    const auto trip = TrafficProfile::PickTrip(m_random, wave, Configuration::CallsGenerator::TrafficPattern());
-    auto call = std::make_shared<Call>(trip.first, trip.second);
-
+    auto call = std::make_shared<Call>(trip.from, trip.to);
     if (!call->IsValid())
       continue;
 
-    std::uniform_real_distribution<double> uniform(0.0, 1.0);
-    call->SetPatience(Scenario::PatienceFor(uniform(m_random)));
+    call->SetPatience(trip.patienceMs);
     Floors::GetPeople().Insert(call);
     m_management->AssignCall(call);
     ++added;
@@ -184,6 +237,7 @@ unsigned int Simulation::AddWave(const TrafficProfile::Wave wave, const unsigned
 
 bool Simulation::SetOutOfOrder(const std::string& elevatorId, const bool outOfOrder)
 {
+  Context::Scope scope(m_context);
   auto lock = Lock();
 
   if (!Running())
@@ -198,19 +252,22 @@ bool Simulation::SetOutOfOrder(const std::string& elevatorId, const bool outOfOr
 
 bool Simulation::CheckFinished()
 {
+  Context::Scope scope(m_context);
   auto lock = Lock();
 
   if (!Running() || m_archived || !Finished())
     return false;
 
   m_archived = true;
-  SimulationClock::Pause();
+  if (m_pauseWhenFinished)
+    SimulationClock::Pause();
   Archive();
   return true;
 }
 
 bool Simulation::Archived()
 {
+  Context::Scope scope(m_context);
   auto lock = Lock();
   return m_archived;
 }
@@ -246,6 +303,7 @@ void Simulation::Archive()
     .Add("id", id)
     .Add("finishedAt", std::string(finishedAt))
     .Add("batch", m_batchId)
+    .Add("pair", m_pairId)
     .Add("scenario", m_scenarioKey)
     .Add("seed", m_seed)
     .Add("clean", m_interventions == 0U)
@@ -292,6 +350,7 @@ void Simulation::Archive()
     .Add("stairs", u64(statistics.abandonedCalls))
     .Add("run", id)
     .Add("batch", m_batchId)
+    .Add("pair", m_pairId)
     .Add("clean", m_interventions == 0U));
 }
 

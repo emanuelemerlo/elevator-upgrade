@@ -14,6 +14,7 @@
 #include "TrafficProfile.h"
 #include "RunArchive.h"
 #include "Scenario.h"
+#include "BuildingContext.h"
 
 // cpp-httplib is third party code: it is compiled without the warnings of the project (Visual Studio uses /W4 /WX).
 #ifdef _MSC_VER
@@ -350,8 +351,19 @@ struct WebServer::Implementation
   bool RejectDuringBatch(httplib::Response& response);
 
   std::string StateJson(std::uint64_t sinceSequence);
+  // Cabins, waiting passengers, statistics and run of one building (entered with its context).
+  std::string BuildingStateJson(Simulation& building);
+
+  // Twin run: a second building on the same scenario and the same clock, next to the main one.
+  void StartTwin(const Configuration::Settings& left, const Configuration::Settings& right);
+  void StopTwin();
+  // The building named by a request parameter: "twin" for the second building, the main one otherwise (or nullptr).
+  Simulation* Building(const std::string& name);
 
   Simulation& simulation;
+  std::recursive_mutex twinMutex;
+  std::unique_ptr<Simulation> twin;
+  bool twinPaused{ false };
   std::string webRoot;
   httplib::Server server;
   std::unique_ptr<std::thread> thread;
@@ -359,8 +371,68 @@ struct WebServer::Implementation
 
 void WebServer::Implementation::PauseWhenFinished()
 {
+  std::lock_guard<std::recursive_mutex> lock(twinMutex);
+
   // Archives the run (and pauses the clock) the first time its end is seen.
   simulation.CheckFinished();
+  if (twin == nullptr)
+    return;
+
+  // A twin run pauses only when both buildings are done: the faster one waits for the other.
+  twin->CheckFinished();
+  if (!twinPaused && simulation.Archived() && twin->Archived())
+  {
+    twinPaused = true;
+    SimulationClock::Pause();
+    EventBus::Publish("twinFinished", Json::Writer::Object());
+  }
+}
+
+Simulation* WebServer::Implementation::Building(const std::string& name)
+{
+  std::lock_guard<std::recursive_mutex> lock(twinMutex);
+
+  if (name == "twin")
+    return twin.get();
+
+  return &simulation;
+}
+
+void WebServer::Implementation::StopTwin()
+{
+  std::lock_guard<std::recursive_mutex> lock(twinMutex);
+
+  if (twin != nullptr)
+  {
+    twin->Stop();
+    twin.reset();
+  }
+
+  simulation.SetPauseWhenFinished(true);
+  simulation.SetPairId("");
+}
+
+void WebServer::Implementation::StartTwin(const Configuration::Settings& left, const Configuration::Settings& right)
+{
+  Configuration::Validate(left);
+  Configuration::Validate(right);
+
+  std::lock_guard<std::recursive_mutex> lock(twinMutex);
+  StopTwin();
+
+  const auto pairId = RunArchive::NewId("pair-");
+
+  // The main building starts the shared clock; the twin joins it at once, so the scenario (same seed) brings the
+  // same passengers to both at the same simulated times.
+  simulation.SetPauseWhenFinished(false);
+  simulation.SetPairId(pairId);
+  simulation.Restart(left);
+
+  twin = std::make_unique<Simulation>("twin");
+  twin->SetPauseWhenFinished(false);
+  twin->SetPairId(pairId);
+  twin->Restart(right, "", false);
+  twinPaused = false;
 }
 
 bool WebServer::Implementation::RejectDuringBatch(httplib::Response& response)
@@ -372,13 +444,13 @@ bool WebServer::Implementation::RejectDuringBatch(httplib::Response& response)
   return true;
 }
 
-std::string WebServer::Implementation::StateJson(const std::uint64_t sinceSequence)
+std::string WebServer::Implementation::BuildingStateJson(Simulation& building)
 {
-  auto lock = simulation.Lock();
-  PauseWhenFinished();
+  Context::Scope scope(building.GetContext());
+  auto lock = building.Lock();
 
   auto elevators = Json::Writer::Array();
-  if (auto* management = simulation.GetManagement())
+  if (auto* management = building.GetManagement())
     for (const auto& elevator : management->GetElevatorSnapshots())
       elevators.Push(ElevatorJson(elevator));
 
@@ -393,20 +465,33 @@ std::string WebServer::Implementation::StateJson(const std::uint64_t sinceSequen
       .Add("manual", person->IsManual())
       .Add("evacuated", person->GetEvacuations() > 0U));
 
+  // Members of the state object, without the braces: the main building is at the top level of the state.
+  auto json = Json::Writer::Object()
+    .Add("run", RunJson(building))
+    .Add("building", BuildingJson())
+    .Add("elevators", elevators)
+    .Add("waiting", waiting)
+    .Add("stats", StatisticsJson(building))
+    .Str();
+
+  return json.substr(1U, json.size() - 2U);
+}
+
+std::string WebServer::Implementation::StateJson(const std::uint64_t sinceSequence)
+{
+  std::lock_guard<std::recursive_mutex> twinLock(twinMutex);
+  PauseWhenFinished();
+
   auto events = Json::Writer::Array();
   for (const auto& event : EventBus::Since(sinceSequence))
     events.Push(EventBus::ToJson(event));
 
-  return Json::Writer::Object()
-    .Add("clock", ClockJson(simulation))
-    .Add("run", RunJson(simulation))
-    .Add("building", BuildingJson())
-    .Add("elevators", elevators)
-    .Add("waiting", waiting)
-    .Add("stats", StatisticsJson(simulation))
-    .Add("events", events)
-    .Add("lastSeq", static_cast<unsigned long long>(EventBus::LastSequence()))
-    .Str();
+  std::string text = "{\"clock\":" + ClockJson(simulation).Str() + "," + BuildingStateJson(simulation);
+  if (twin != nullptr)
+    text += ",\"twin\":{" + BuildingStateJson(*twin) + "}";
+
+  text += ",\"events\":" + events.Str() + ",\"lastSeq\":" + std::to_string(EventBus::LastSequence()) + "}";
+  return text;
 }
 
 void WebServer::Implementation::RegisterRoutes()
@@ -437,12 +522,17 @@ void WebServer::Implementation::RegisterRoutes()
       .Add("maxSpeed", SimulationClock::MaxSpeed, 0));
   });
 
-  server.Get("/api/report", [this](const httplib::Request&, httplib::Response& response)
+  server.Get("/api/report", [this](const httplib::Request& request, httplib::Response& response)
   {
-    auto lock = simulation.Lock();
+    auto* building = Building(request.get_param_value("building"));
+    if (building == nullptr)
+      return ReplyError(response, "there is no twin building", 404);
+
+    Context::Scope scope(building->GetContext());
+    auto lock = building->Lock();
     auto lines = Json::Writer::Array();
 
-    if (auto* management = simulation.GetManagement())
+    if (auto* management = building->GetManagement())
       for (const auto& line : management->BuildReport())
         lines.PushString(line);
 
@@ -510,7 +600,17 @@ void WebServer::Implementation::RegisterRoutes()
     if (call == nullptr)
       return ReplyError(response, "the simulation is not running", 409);
 
-    Reply(response, Json::Writer::Object().Add("id", Id(call)));
+    // In a twin run the same passenger appears in both buildings, so the comparison stays fair.
+    auto ids = Json::Writer::Array();
+    ids.PushNumber(static_cast<double>(call->GetId()), 0);
+    {
+      std::lock_guard<std::recursive_mutex> twinLock(twinMutex);
+      if (twin != nullptr)
+        if (const auto mirrored = twin->AddCall(from, to))
+          ids.PushNumber(static_cast<double>(mirrored->GetId()), 0);
+    }
+
+    Reply(response, Json::Writer::Object().Add("id", Id(call)).Add("ids", ids));
   });
 
   server.Post("/api/wave", [this](const httplib::Request& request, httplib::Response& response)
@@ -534,7 +634,14 @@ void WebServer::Implementation::RegisterRoutes()
     if (RejectDuringBatch(response))
       return;
 
-    const auto added = simulation.AddWave(wave, count);
+    // The wave is decided once: in a twin run both buildings get the same people.
+    const auto trips = simulation.MakeWave(wave, count);
+    const auto added = simulation.AddTrips(trips);
+    {
+      std::lock_guard<std::recursive_mutex> twinLock(twinMutex);
+      if (twin != nullptr)
+        twin->AddTrips(trips);
+    }
     if (added == 0U)
       return ReplyError(response, "the simulation is not running", 409);
 
@@ -553,7 +660,8 @@ void WebServer::Implementation::RegisterRoutes()
     if (RejectDuringBatch(response))
       return;
 
-    if (!simulation.SetOutOfOrder(id, state == "true"))
+    auto* building = Building(request.get_param_value("building"));
+    if (building == nullptr || !building->SetOutOfOrder(id, state == "true"))
       return ReplyError(response, "unknown elevator '" + id + "' or simulation not running", 404);
 
     Reply(response, Json::Writer::Object().Add("id", id).Add("outOfOrder", state == "true"));
@@ -568,6 +676,8 @@ void WebServer::Implementation::RegisterRoutes()
     {
       auto settings = simulation.UserSettings();
       ParseSettings(request, settings);
+      Configuration::Validate(settings);
+      StopTwin();
       simulation.Restart(settings);
     }
     catch (const std::exception& error)
@@ -638,6 +748,7 @@ void WebServer::Implementation::RegisterRoutes()
             variants.push_back(variant);
           }
 
+      StopTwin();
       const auto id = simulation.StartBatch(variants);
       Reply(response, Json::Writer::Object()
         .Add("batch", id)
@@ -654,6 +765,72 @@ void WebServer::Implementation::RegisterRoutes()
   {
     simulation.CancelBatch();
     Reply(response, Json::Writer::Object().Add("cancelled", true));
+  });
+
+  server.Post("/api/twin", [this](const httplib::Request& request, httplib::Response& response)
+  {
+    // Two buildings on the same scenario: the parameters of the scenario have the names of config.json, the two
+    // variants are given by left* and right* parameters (dispatchStrategy, idleParking, numberOfElevators, maxPeople).
+    if (RejectDuringBatch(response))
+      return;
+
+    try
+    {
+      auto base = simulation.UserSettings();
+      ParseSettings(request, base);
+      base.randomSeed = Scenario::ResolveSeed(base.randomSeed);
+
+      const auto variant = [&request, &base](const std::string& side)
+      {
+        // leftDispatchStrategy, rightNumberOfElevators...
+        const auto name = [&side](std::string key)
+        {
+          key[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(key[0])));
+          return side + key;
+        };
+
+        auto settings = base;
+        std::string json = "{";
+
+        for (const auto* key : { "dispatchStrategy", "idleParking" })
+        {
+          const auto value = request.get_param_value(name(key));
+          if (value.empty())
+            continue;
+          if (!IsWord(value))
+            throw std::invalid_argument(name(key) + " must be a single word");
+          json += "\"" + std::string(key) + "\": \"" + value + "\", ";
+        }
+
+        for (const auto* key : { "numberOfElevators", "maxPeople" })
+        {
+          const auto value = request.get_param_value(name(key));
+          if (value.empty())
+            continue;
+          unsigned int number = 0U;
+          if (!ParseUnsigned(value, number))
+            throw std::invalid_argument(name(key) + " must be a number");
+          json += "\"" + std::string(key) + "\": " + value + ", ";
+        }
+
+        json += "\"type\": \"Random\" }";
+        Configuration::ParseJson(json, settings);
+        return settings;
+      };
+
+      StartTwin(variant("left"), variant("right"));
+      Reply(response, Json::Writer::Object().Add("seed", base.randomSeed));
+    }
+    catch (const std::exception& error)
+    {
+      return ReplyError(response, error.what());
+    }
+  });
+
+  server.Post("/api/twin/stop", [this](const httplib::Request&, httplib::Response& response)
+  {
+    StopTwin();
+    Reply(response, Json::Writer::Object().Add("twin", false));
   });
 
   if (!server.set_mount_point("/", webRoot))

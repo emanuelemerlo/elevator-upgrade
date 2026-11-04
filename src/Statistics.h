@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <map>
+#include <mutex>
 
 struct ElevatorAssignmentStatistics
 {
@@ -57,6 +59,15 @@ struct WaitDistribution
 
 namespace Statistics
 {
+  // Statistics of one building (see BuildingContext): every function below works on the building of the calling thread.
+  struct Store
+  {
+    std::mutex mutex;
+    StatisticsSnapshot snapshot;
+    std::map<std::string, std::uint64_t> assignments;
+    std::vector<std::uint32_t> waitSamples;
+  };
+
   void Reset();
   void RecordQueuedCall();
   void RecordAssignedCall(const std::string& elevatorId);

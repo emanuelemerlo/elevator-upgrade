@@ -13,6 +13,7 @@
 #include "Configuration.h"
 #include "Floors.h"
 #include "TrafficProfile.h"
+#include "Scenario.h"
 
 #include <atomic>
 #include <memory>
@@ -24,13 +25,17 @@
 #include <vector>
 
 class Management;
+class BuildingContext;
 class PeopleCallsGenerator;
 class Call;
 
 class Simulation final
 {
 public:
+  // The building of the console version and of the main view of the web interface (the default context).
   Simulation();
+  // A further building with its own context (see BuildingContext), e.g. the second one of a twin run.
+  explicit Simulation(const std::string& buildingName);
   ~Simulation();
 
   Simulation(const Simulation&) = delete;
@@ -39,17 +44,29 @@ public:
   Simulation& operator=(Simulation&&) = delete;
 
 public:
-  /** \brief Starts a run with the current configuration (statistics, waiting passengers and clock start from zero). */
-  void Start();
+  /**
+   * \brief Starts a run with the current configuration (statistics and waiting passengers start from zero).
+   * \param leader true: the shared clock and the event stream start again too; false: the run joins the clock of the
+   *        leader building, started just before (twin runs).
+   */
+  void Start(bool leader = true);
   /** \brief Stops the run: the clock is aborted and every thread is joined. Statistics are kept for the report. */
   void Stop();
   /** \brief Stops the current run, applies the new settings and starts a new run. Throws if the settings are invalid. */
-  void Restart(const Configuration::Settings& settings, const std::string& batchId = "");
+  void Restart(const Configuration::Settings& settings, const std::string& batchId = "", bool leader = true);
 
   bool Running() const { return m_management != nullptr && !m_stopped; }
   /** \brief True when the generator is done and every passenger has reached the destination. */
   bool Finished() const;
   bool GeneratorFinished() const;
+
+  /** \brief The building of this simulation: enter it (Context::Scope) before using the management or the statistics. */
+  BuildingContext* GetContext() const { return m_context; }
+
+  // A twin run pauses the clock only when both buildings are done, so its buildings do not pause it themselves.
+  void SetPauseWhenFinished(bool pause) { m_pauseWhenFinished = pause; }
+  // Identifier shared by the two runs of a twin run, written in the archive ("" for the other runs).
+  void SetPairId(const std::string& pairId) { m_pairId = pairId; }
   unsigned int GeneratedCalls() const;
 
   // Scenario of the current run: the seed actually used (also when the configured one is 0) and its key.
@@ -90,6 +107,9 @@ public:
   // Interactive commands (web interface).
   std::shared_ptr<Call> AddCall(Floors::FloorNumber from, Floors::FloorNumber to);
   unsigned int AddWave(TrafficProfile::Wave wave, unsigned int count);
+  // A wave decided once and added to several buildings (twin runs get the same people).
+  std::vector<ScheduledCall> MakeWave(TrafficProfile::Wave wave, unsigned int count);
+  unsigned int AddTrips(const std::vector<ScheduledCall>& trips);
   bool SetOutOfOrder(const std::string& elevatorId, bool outOfOrder);
 
   /**
@@ -109,10 +129,16 @@ public:
 
 private:
   void StopLocked();
+  void StartLocked(bool leader);
   void Archive();
   void BatchThread(std::vector<Variant> variants, std::string batchId);
 
 private:
+  std::unique_ptr<BuildingContext> m_ownedContext;   // declared first: destroyed after the threads that use it
+  BuildingContext* m_context{ nullptr };
+  bool m_pauseWhenFinished{ true };
+  std::string m_pairId;
+
   std::recursive_mutex m_mutex;
   std::unique_ptr<Management> m_management;
   std::unique_ptr<PeopleCallsGenerator> m_generator;

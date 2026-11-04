@@ -1,4 +1,5 @@
 #include "Statistics.h"
+#include "BuildingContext.h"
 
 #include <algorithm>
 #include <limits>
@@ -7,18 +8,15 @@
 
 namespace
 {
-  std::mutex g_mutex;
-  StatisticsSnapshot g_statistics;
-  std::map<std::string, std::uint64_t> g_elevatorAssignments;
-  std::vector<std::uint32_t> g_waitSamplesMs;
+  Statistics::Store& CurrentStore() { return Context::Current().GetStatistics(); }
 
   void RefreshElevatorAssignments()
   {
     // Keep the public snapshot compact while allowing cheap incremental updates
     // to the per-elevator assignment counters during the simulation.
-    g_statistics.elevatorAssignments.clear();
-    for (const auto& assignment : g_elevatorAssignments)
-      g_statistics.elevatorAssignments.push_back({ assignment.first, assignment.second });
+    CurrentStore().snapshot.elevatorAssignments.clear();
+    for (const auto& assignment : CurrentStore().assignments)
+      CurrentStore().snapshot.elevatorAssignments.push_back({ assignment.first, assignment.second });
   }
 }
 
@@ -48,23 +46,23 @@ double StatisticsSnapshot::AverageAssignmentTimeMs() const
 
 void Statistics::Reset()
 {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  g_statistics = StatisticsSnapshot();
-  g_elevatorAssignments.clear();
-  g_waitSamplesMs.clear();
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  CurrentStore().snapshot = StatisticsSnapshot();
+  CurrentStore().assignments.clear();
+  CurrentStore().waitSamples.clear();
 }
 
 void Statistics::RecordQueuedCall()
 {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  ++g_statistics.queuedCalls;
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  ++CurrentStore().snapshot.queuedCalls;
 }
 
 void Statistics::RecordAssignedCall(const std::string& elevatorId)
 {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  ++g_statistics.assignedCalls;
-  ++g_elevatorAssignments[elevatorId];
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  ++CurrentStore().snapshot.assignedCalls;
+  ++CurrentStore().assignments[elevatorId];
 }
 
 void Statistics::RecordAssignmentDecision(
@@ -72,82 +70,82 @@ void Statistics::RecordAssignmentDecision(
   const bool forced,
   const bool availableElevatorFound)
 {
-  std::lock_guard<std::mutex> lock(g_mutex);
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
 
   // Dispatch timings are measured around the whole assignment critical section,
   // so spikes include both scoring work and contention on concurrent call bursts.
-  ++g_statistics.assignmentDecisions;
+  ++CurrentStore().snapshot.assignmentDecisions;
 
   if (forced)
-    ++g_statistics.forcedAssignments;
+    ++CurrentStore().snapshot.forcedAssignments;
 
   if (!availableElevatorFound)
-    ++g_statistics.noAvailableElevatorDecisions;
+    ++CurrentStore().snapshot.noAvailableElevatorDecisions;
 
   const auto assignmentTimeUs = static_cast<std::uint64_t>(assignmentTime.count());
-  g_statistics.totalAssignmentTimeUs += assignmentTimeUs;
-  g_statistics.maxAssignmentTimeUs = std::max(g_statistics.maxAssignmentTimeUs, assignmentTimeUs);
+  CurrentStore().snapshot.totalAssignmentTimeUs += assignmentTimeUs;
+  CurrentStore().snapshot.maxAssignmentTimeUs = std::max(CurrentStore().snapshot.maxAssignmentTimeUs, assignmentTimeUs);
 }
 
 void Statistics::RecordCapacityLimitedDecision()
 {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  ++g_statistics.capacityLimitedDecisions;
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  ++CurrentStore().snapshot.capacityLimitedDecisions;
 }
 
 void Statistics::RecordCommittedElevatorLoad(const std::size_t committedLoad)
 {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  g_statistics.maxCommittedElevatorLoad = std::max(
-    g_statistics.maxCommittedElevatorLoad,
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  CurrentStore().snapshot.maxCommittedElevatorLoad = std::max(
+    CurrentStore().snapshot.maxCommittedElevatorLoad,
     static_cast<std::uint64_t>(committedLoad));
 }
 
 void Statistics::RecordCabinPeopleCount(const std::size_t cabinPeopleCount)
 {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  g_statistics.maxCabinPeople = std::max(
-    g_statistics.maxCabinPeople,
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  CurrentStore().snapshot.maxCabinPeople = std::max(
+    CurrentStore().snapshot.maxCabinPeople,
     static_cast<std::uint64_t>(cabinPeopleCount));
 }
 
 void Statistics::RecordBoardedPassenger(const std::chrono::milliseconds waitTime)
 {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  ++g_statistics.boardedPassengers;
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  ++CurrentStore().snapshot.boardedPassengers;
   const auto waitTimeMs = static_cast<std::uint64_t>(waitTime.count());
-  g_statistics.totalWaitTimeMs += waitTimeMs;
-  g_statistics.maxWaitTimeMs = std::max(g_statistics.maxWaitTimeMs, waitTimeMs);
-  g_waitSamplesMs.push_back(static_cast<std::uint32_t>(std::min<std::uint64_t>(waitTimeMs, std::numeric_limits<std::uint32_t>::max())));
+  CurrentStore().snapshot.totalWaitTimeMs += waitTimeMs;
+  CurrentStore().snapshot.maxWaitTimeMs = std::max(CurrentStore().snapshot.maxWaitTimeMs, waitTimeMs);
+  CurrentStore().waitSamples.push_back(static_cast<std::uint32_t>(std::min<std::uint64_t>(waitTimeMs, std::numeric_limits<std::uint32_t>::max())));
 }
 
 void Statistics::RecordCompletedPassenger(const std::chrono::milliseconds journeyTime)
 {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  ++g_statistics.completedPassengers;
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  ++CurrentStore().snapshot.completedPassengers;
 
   const auto journeyTimeMs = static_cast<std::uint64_t>(std::max<long long>(0, journeyTime.count()));
-  g_statistics.totalJourneyTimeMs += journeyTimeMs;
-  g_statistics.maxJourneyTimeMs = std::max(g_statistics.maxJourneyTimeMs, journeyTimeMs);
+  CurrentStore().snapshot.totalJourneyTimeMs += journeyTimeMs;
+  CurrentStore().snapshot.maxJourneyTimeMs = std::max(CurrentStore().snapshot.maxJourneyTimeMs, journeyTimeMs);
 }
 
 void Statistics::RecordRequeuedCall()
 {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  ++g_statistics.requeuedCalls;
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  ++CurrentStore().snapshot.requeuedCalls;
 }
 
 void Statistics::RecordAbandonedCall()
 {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  ++g_statistics.abandonedCalls;
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  ++CurrentStore().snapshot.abandonedCalls;
 }
 
 std::uint64_t Statistics::ActiveCalls()
 {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  const auto closed = g_statistics.completedPassengers + g_statistics.abandonedCalls;
-  return g_statistics.queuedCalls > closed ? g_statistics.queuedCalls - closed : 0U;
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  const auto closed = CurrentStore().snapshot.completedPassengers + CurrentStore().snapshot.abandonedCalls;
+  return CurrentStore().snapshot.queuedCalls > closed ? CurrentStore().snapshot.queuedCalls - closed : 0U;
 }
 
 WaitDistribution Statistics::GetWaitDistribution()
@@ -155,8 +153,8 @@ WaitDistribution Statistics::GetWaitDistribution()
   std::vector<std::uint32_t> samples;
 
   {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    samples = g_waitSamplesMs;
+    std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+    samples = CurrentStore().waitSamples;
   }
 
   WaitDistribution distribution;
@@ -181,7 +179,7 @@ WaitDistribution Statistics::GetWaitDistribution()
 
 StatisticsSnapshot Statistics::GetSnapshot()
 {
-  std::lock_guard<std::mutex> lock(g_mutex);
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
   RefreshElevatorAssignments();
-  return g_statistics;
+  return CurrentStore().snapshot;
 }

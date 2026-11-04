@@ -7,6 +7,7 @@
 #include "Call.h"
 #include "People.h"
 #include "Log.h"
+#include "BuildingContext.h"
 
 
 Floors::Floors()
@@ -155,8 +156,8 @@ std::size_t Floors::CountStopsBetween(const FloorNumber firstFloor, const FloorN
 
 People& Floors::GetPeople()
 {
-  static People people("Building");
-  return people;
+  // The passengers waiting on the floors of the building of the calling thread.
+  return Context::Current().GetWaitingPeople();
 }
 
 Floors::FloorNumber Floors::Search(const FloorStops& stops, const FloorNumber startFloor, const Direction direction)
@@ -231,6 +232,9 @@ void Floors::Trace(const FloorNumber currentFloor)
   std::stringstream message;
   message << "Floors stops: ";
 
+  // The stops are changed by the cabin thread while the dispatcher traces them.
+  std::unique_lock<std::mutex> lock(m_mutex);
+
   for (FloorNumber floor = BottomFloor; IsValid(floor); ++floor)
   {
     std::string direction;
@@ -258,6 +262,8 @@ void Floors::Trace(const FloorNumber currentFloor)
     if (m_stops[floor].first)
       message << "[" << currentFloorIndicator << std::to_string(floor) << direction << "]";
   }
+
+  lock.unlock();
 
   m_log.Trace(message, Log::TraceLevel::Verbose);
 }

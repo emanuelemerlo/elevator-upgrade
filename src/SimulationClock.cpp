@@ -35,6 +35,9 @@ namespace
   };
 
   thread_local ThreadTimeline t_timeline;
+  thread_local const std::atomic_bool* t_abortFlag = nullptr;
+
+  bool ThreadAborted() { return t_abortFlag != nullptr && t_abortFlag->load(); }
 
   double ClampSpeed(const double speed)
   {
@@ -187,7 +190,22 @@ void SimulationClock::Abort()
 bool SimulationClock::Aborted()
 {
   std::lock_guard<std::mutex> lock(g_mutex);
-  return g_aborted;
+  return g_aborted || ThreadAborted();
+}
+
+void SimulationClock::SetThreadAbortFlag(const std::atomic_bool* flag)
+{
+  t_abortFlag = flag;
+}
+
+void SimulationClock::WakeAll()
+{
+  {
+    // Taking the mutex orders the wake-up after the flag change: a thread between its check and its wait cannot miss it.
+    std::lock_guard<std::mutex> lock(g_mutex);
+  }
+
+  g_changed.notify_all();
 }
 
 bool SimulationClock::SleepUntil(const long long simulatedMs)
@@ -197,7 +215,7 @@ bool SimulationClock::SleepUntil(const long long simulatedMs)
 
   for (;;)
   {
-    if (g_aborted)
+    if (g_aborted || ThreadAborted())
       return false;
 
     const auto now = NowLocked();

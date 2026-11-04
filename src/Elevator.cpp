@@ -6,12 +6,19 @@
 #include "EventBus.h"
 #include "SimulationClock.h"
 #include "Energy.h"
+#include "BuildingContext.h"
 
 Elevator::Elevator(const std::string& id)
 {
   SetId(id);
 
-  m_thread = std::make_unique<std::thread>(&Elevator::ElevatorThreadFunction, this);
+  // The cabin thread runs in the building that creates the cabin (see BuildingContext).
+  auto* context = &Context::Current();
+  m_thread = std::make_unique<std::thread>([this, context]()
+  {
+    Context::Scope scope(context);
+    ElevatorThreadFunction();
+  });
 }
 
 Elevator::~Elevator()

@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 
@@ -48,7 +49,16 @@ namespace SimulationClock
 
   /** \brief Wakes every sleeping thread and makes every current and future sleep return false at once. */
   void Abort();
+  /** \brief True if the clock or the building of the calling thread has been aborted. */
   bool Aborted();
+
+  /**
+   * \brief Stop flag of the building the calling thread belongs to (see BuildingContext): when it is set, the sleeps
+   *        of that thread return false, while the clock keeps running for the other buildings.
+   */
+  void SetThreadAbortFlag(const std::atomic_bool* flag);
+  /** \brief Wakes every sleeping thread, so that it checks its building stop flag. */
+  void WakeAll();
 
   /**
    * \brief Sleeps for a simulated duration.

@@ -10,6 +10,7 @@
 #include "EventBus.h"
 #include "SimulationClock.h"
 #include "Energy.h"
+#include "BuildingContext.h"
 
 #include <map>
 #include <random>
@@ -410,7 +411,10 @@ Management::Management(const unsigned int numberOfElevators)
 
   // Start pending calls worker
   m_pendingThreadRunning = true;
-  m_pendingThread = std::make_unique<std::thread>([this]() {
+  auto* context = &Context::Current();
+  m_pendingThread = std::make_unique<std::thread>([this, context]() {
+    Context::Scope scope(context);
+
     // Retry period (real time) when no event wakes the worker up earlier: retrying is cheap and harmless.
     // Short, because it is also the period of the patience check: at high speed 5 ms are several simulated seconds.
     const auto fallbackRetry = std::chrono::milliseconds(5);

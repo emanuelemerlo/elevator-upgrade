@@ -69,6 +69,7 @@ private:
   Log m_log;
 
   std::atomic_bool m_finished{ false };
+  class BuildingContext* m_context{ nullptr };   // building the generator belongs to (its thread runs in it)
   std::atomic_uint m_generatedCalls{ 0U };
   unsigned int m_seed{ 0U };
   std::vector<ScheduledCall> m_schedule;

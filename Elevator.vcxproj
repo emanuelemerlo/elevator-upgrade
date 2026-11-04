@@ -12,6 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\AssignmentOptimizer.cpp" />
+    <ClCompile Include="src\BuildingContext.cpp" />
     <ClCompile Include="src\Configuration.cpp" />
     <ClCompile Include="src\ConsoleView.cpp" />
     <ClCompile Include="src\Elevator.cpp" />
@@ -36,6 +37,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\AssignmentOptimizer.h" />
+    <ClInclude Include="src\BuildingContext.h" />
     <ClInclude Include="src\Call.h" />
     <ClInclude Include="src\ConsoleView.h" />
     <ClInclude Include="src\Configuration.h" />

@@ -1,6 +1,7 @@
 #include "EventBus.h"
 
 #include "SimulationClock.h"
+#include "BuildingContext.h"
 
 #include <deque>
 #include <mutex>
@@ -18,6 +19,7 @@ void EventBus::Publish(const std::string& type, const Json::Writer& data)
 {
   SimulationEvent event;
   event.simulatedMs = SimulationClock::Now();
+  event.building = Context::Current().Name();
   event.type = type;
   event.data = data.Str();
 
@@ -65,6 +67,7 @@ std::string EventBus::ToJson(const SimulationEvent& event)
   return Json::Writer::Object()
     .Add("seq", static_cast<unsigned long long>(event.sequence))
     .Add("t", event.simulatedMs)
+    .Add("b", event.building)
     .Add("type", event.type)
     .Raw("data", event.data)
     .Str();

@@ -60,7 +60,8 @@
       <section class="panel">
         <h2>Right now</h2>
         <p class="run-info" id="runInfo"></p>
-        <dl class="numbers">
+        <table class="twin-table" id="twinTable" hidden></table>
+        <dl class="numbers" id="numbers">
           <div><dt>Waiting</dt><dd id="statWaiting">0</dd></div>
           <div><dt>Riding</dt><dd id="statRiding">0</dd></div>
           <div><dt>Delivered</dt><dd id="statDelivered">0</dd></div>
@@ -99,6 +100,10 @@
         <div class="actions actions-start">
           <button type="button" class="btn btn-primary" id="compareButton">Compare strategies…</button>
           <button type="button" class="btn" id="runsButton">Results</button>
+        </div>
+        <div class="actions actions-start">
+          <button type="button" class="btn" id="twinButton">Two buildings…</button>
+          <button type="button" class="btn" id="twinStop" hidden>Back to one building</button>
         </div>
         <div class="actions actions-start">
           <button type="button" class="btn" id="newRunButton">New run…</button>
@@ -207,6 +212,72 @@
       <div class="actions">
         <button type="button" class="btn" id="compareCancel">Cancel</button>
         <button type="submit" class="btn btn-primary">Run comparison</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="twinDialog" aria-labelledby="twinTitle">
+    <form method="dialog" id="twinForm">
+      <h2 id="twinTitle">Two buildings side by side</h2>
+      <p class="note">The same passengers arrive in both buildings at the same moments, on the same clock. Your own calls and waves go to both; a fault only to the cabin you click.</p>
+      <div class="form-grid">
+        <label>Floors <input type="number" name="numberOfFloors" min="2" max="60" required></label>
+        <label>Trips per day <input type="number" name="averageCallsPerDay" min="1" max="200000" required></label>
+        <label>Building
+          <select name="trafficPattern">
+            <option value="Office">Office</option>
+            <option value="Residential">Homes</option>
+            <option value="Uniform">Random trips</option>
+          </select>
+        </label>
+        <label>Days <input type="number" name="numberOfSimulationDays" min="1" max="7" required></label>
+        <label>Start at hour <input type="number" name="dayStartHour" min="0" max="23.5" step="0.5" required></label>
+        <label>Seed (0 = new scenario) <input type="number" name="randomSeed" min="0" max="999999999"></label>
+      </div>
+      <div class="twin-sides">
+        <fieldset>
+          <legend>Left building</legend>
+          <label>Strategy
+            <select name="leftDispatchStrategy">
+              <option value="Optimized">Optimized</option>
+              <option value="Nearest">Nearest</option>
+              <option value="Collective">Collective</option>
+            </select>
+          </label>
+          <label>Idle cabins
+            <select name="leftIdleParking">
+              <option value="Stay">Stay</option>
+              <option value="Lobby">Lobby</option>
+              <option value="Spread">Spread</option>
+            </select>
+          </label>
+          <label>Cabins <input type="number" name="leftNumberOfElevators" min="1" max="26" required></label>
+          <label>People per cabin <input type="number" name="leftMaxPeople" min="1" max="60" required></label>
+        </fieldset>
+        <fieldset>
+          <legend>Right building</legend>
+          <label>Strategy
+            <select name="rightDispatchStrategy">
+              <option value="Optimized">Optimized</option>
+              <option value="Nearest">Nearest</option>
+              <option value="Collective">Collective</option>
+            </select>
+          </label>
+          <label>Idle cabins
+            <select name="rightIdleParking">
+              <option value="Stay">Stay</option>
+              <option value="Lobby">Lobby</option>
+              <option value="Spread">Spread</option>
+            </select>
+          </label>
+          <label>Cabins <input type="number" name="rightNumberOfElevators" min="1" max="26" required></label>
+          <label>People per cabin <input type="number" name="rightMaxPeople" min="1" max="60" required></label>
+        </fieldset>
+      </div>
+      <p class="error" id="twinError" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="btn" id="twinCancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Start both</button>
       </div>
     </form>
   </dialog>

@@ -10,6 +10,7 @@
 #include "TrafficProfile.h"
 #include "Scenario.h"
 #include "SimulationClock.h"
+#include "BuildingContext.h"
 
 #include <random>
 #include <chrono>
@@ -21,7 +22,7 @@
 
 using namespace std::chrono_literals;
 
-PeopleCallsGenerator::PeopleCallsGenerator(Management& management) : m_management(management)
+PeopleCallsGenerator::PeopleCallsGenerator(Management& management) : m_management(management), m_context(&Context::Current())
 {
   m_log.SetTraceId("Generator");
 }
@@ -93,6 +94,8 @@ void PeopleCallsGenerator::RandomGeneratorThread::CycleFunction(PeopleCallsGener
   if (peopleCallsGenerator == nullptr || StopRequested())
     return;
 
+  Context::Scope scope(peopleCallsGenerator->m_context);
+
   for (const auto& scheduled : peopleCallsGenerator->m_schedule)
   {
     // Every sleep returns false when the simulation is aborted: the generator must not wait for the next call.
@@ -133,6 +136,8 @@ void PeopleCallsGenerator::FixedGeneratorThread::CycleFunction(PeopleCallsGenera
 {
   if (peopleCallsGenerator == nullptr)
     return;
+
+  Context::Scope scope(peopleCallsGenerator->m_context);
 
   std::default_random_engine generator(GeneratorSeed());
 

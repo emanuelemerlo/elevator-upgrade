@@ -466,3 +466,27 @@ table.runs tr.hands-on td { color: var(--ink-soft); font-style: italic; }
 table.runs td button { padding: 0.1rem 0.5rem; font-size: 0.78rem; }
 
 .numbers dd.small-number { font-size: 1.2rem; }
+
+/* Twin buildings ------------------------------------------------------------- */
+
+.twin-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+.twin-sides fieldset { flex-direction: column; gap: 0.5rem; }
+.twin-sides fieldset label { flex-direction: column; align-items: stretch; gap: 0.2rem; font-size: 0.85rem; color: var(--ink-soft); }
+.twin-sides select, .twin-sides input {
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--steel-400);
+  border-radius: var(--radius-small);
+  background: white;
+  color: var(--ink);
+}
+
+.twin-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.twin-table th, .twin-table td { padding: 0.25rem 0.3rem; text-align: right; border-bottom: 1px solid var(--steel-100); }
+.twin-table th:first-child, .twin-table td:first-child { text-align: left; font-weight: 400; color: var(--ink-soft); font-size: 0.82rem; }
+.twin-table thead th { font-family: var(--font-sign); font-size: 1rem; font-weight: 600; color: var(--ink); }
+.twin-table td { font-family: var(--font-sign); font-size: 1.15rem; font-weight: 600; }
+.twin-table td.better { color: var(--go); }
+
+@media (max-width: 560px) {
+  .twin-sides { grid-template-columns: 1fr; }
+}

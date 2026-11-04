@@ -73,7 +73,8 @@ builds and runs every program in `tests/`:
   runs at high speed: a run ends by itself with every passenger delivered, a cabin put out of order while travelling
   stops at the next floor and its passenger completes the trip with another cabin, a restart applies new settings,
   the same seed gives the same passengers, every strategy serves the same scenario and is archived with its energy,
-  idle cabins reach their home floors, impatient passengers take the stairs.
+  idle cabins reach their home floors, impatient passengers take the stairs, two buildings run side by side without
+  sharing passengers, statistics or faults.
 
 ## Web interface
 
@@ -97,6 +98,7 @@ What you can do:
 | Report | The same final report of the console version, at any moment; it opens by itself when everybody has arrived |
 | Compare strategies | Runs several variants of the same scenario one after the other at full speed (see [Comparing strategies](#comparing-strategies)) |
 | Results | Table and charts of the completed runs of a scenario, CSV export, *Watch* to run a variant again live |
+| Two buildings | Two variants side by side, live, on the same passengers and the same clock (see [Two buildings](#two-buildings)) |
 
 The *Dispatcher* panel shows the last assignment decision with the cost of every cabin (the extra passenger time the
 call adds to its route), so you can see why a cabin has been chosen. *What happened* lists the important events
@@ -118,6 +120,12 @@ The interface uses a small JSON API, handy for scripts too:
 | `POST /api/runs/clear` | Empties the archive |
 | `POST /api/batch` | Comparison: scenario settings (same names as above) plus `strategies=Optimized,Nearest`, `parkings=Stay,Lobby`, `elevators=3,4` |
 | `POST /api/batch/cancel` | Stops the comparison after the current variant |
+| `POST /api/twin` | Two buildings: scenario settings plus `leftDispatchStrategy`, `leftIdleParking`, `leftNumberOfElevators`, `leftMaxPeople` and the same with `right` |
+| `POST /api/twin/stop` | Back to one building |
+
+In a twin run `GET /api/state` has a `twin` member with the cabins, passengers, statistics and run of the right
+building; `POST /api/elevator` and `GET /api/report` take `building=twin` for it, and every event has a `b` field
+(`""` for the main building, `"twin"` for the other).
 
 In web mode the log goes to its file only, from `Warning` up, because hours of simulated traffic at high speed would
 produce a very large file.
@@ -175,6 +183,21 @@ scenario for every row):
 
 Spreading the idle cabins halves the waits of the optimized dispatcher but costs about 30% more energy; sending them
 back to the lobby all day costs even more and does not help an office outside the morning peak.
+
+### Two buildings
+
+*Two buildings…* shows two variants live, side by side: same floors and passengers (same seed and traffic), on the
+same simulated clock, with their own strategy, idle cabin rule, number of cabins and capacity. The panel compares
+waits, stairs and energy as they happen (green is the better side), the history draws both queues, the feed and the
+dispatcher say which side an event comes from. A passenger you call or a wave you send appears in both buildings at
+once; a fault only hits the cabin you click. When both buildings are done the two results are archived as a pair and
+the results open on their scenario.
+
+Under the hood the original model keeps its building as global data (`Configuration::Get()`, `Floors::GetPeople()`,
+`Statistics`). The fork keeps that interface but moves the data into a `BuildingContext`: every thread of a building
+(cabins, dispatcher, generator) runs inside its context, so the model code is unchanged and two buildings do not see
+each other. The simulated clock stays shared, and each building has its own stop flag, so one can be stopped while the
+other keeps running. The test suite also runs clean under ThreadSanitizer.
 
 ### The stairs
 
@@ -405,4 +428,4 @@ The report also includes a cabin sizing recommendation:
 
 Possible future improvements:
 - Parking that depends on the hour (e.g. back to the lobby only before the morning peak)
-- Two buildings side by side, live, on the same scenario (needs the global state of the model to become per-run)
+- More than two buildings side by side, or a comparison in series run as parallel buildings
