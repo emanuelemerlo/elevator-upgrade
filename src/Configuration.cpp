@@ -1,4 +1,5 @@
 #include "Configuration.h"
+#include "SimulationClock.h"
 
 #include <algorithm>
 #include <cctype>
@@ -13,7 +14,6 @@
 namespace
 {
   Configuration::Settings g_settings;
-  std::chrono::steady_clock::time_point g_simulationStartTime = std::chrono::steady_clock::now();
 
   std::string ReadFile(const std::string& path)
   {
@@ -115,6 +115,19 @@ namespace
     throw std::invalid_argument("Invalid callsGenerator.type value: " + value);
   }
 
+  Configuration::CallsGenerator::Pattern ParseTrafficPattern(const std::string& value)
+  {
+    const auto normalized = ToLower(value);
+    if (normalized == "uniform")
+      return Configuration::CallsGenerator::Pattern::Uniform;
+    if (normalized == "office")
+      return Configuration::CallsGenerator::Pattern::Office;
+    if (normalized == "residential")
+      return Configuration::CallsGenerator::Pattern::Residential;
+
+    throw std::invalid_argument("Invalid callsGenerator.trafficPattern value: " + value + " (Uniform, Office or Residential)");
+  }
+
   ILog::LogType ParseLogType(const std::string& value)
   {
     const auto normalized = ToLower(value);
@@ -128,8 +141,10 @@ namespace
     throw std::invalid_argument("Invalid log.defaultLogType value: " + value);
   }
 
-  void Validate(const Configuration::Settings& settings)
-  {
+}
+
+void Configuration::Validate(const Settings& settings)
+{
     if (settings.numberOfElevators == 0)
       throw std::invalid_argument("building.numberOfElevators must be greater than 0");
 
@@ -154,18 +169,25 @@ namespace
     if (settings.numberOfSimulationDays == 0)
       throw std::invalid_argument("callsGenerator.numberOfSimulationDays must be greater than 0");
 
-    if (settings.simulationDayDuration.count() == 0)
-      throw std::invalid_argument("callsGenerator.simulationDayDurationMs must be greater than 0");
 
     if (settings.timeToReachTheNextFloor.count() == 0)
       throw std::invalid_argument("elevator.timeToReachTheNextFloorMs must be greater than 0");
 
-    if (!(settings.timeScale > 0.0) || settings.timeScale > 1000.0)
-      throw std::invalid_argument("simulation.timeScale must be greater than 0 and at most 1000");
+    const auto minDaySeconds = static_cast<double>(SimulationClock::DayMs) / 1000.0 / SimulationClock::MaxSpeed;
+    const auto maxDaySeconds = static_cast<double>(SimulationClock::DayMs) / 1000.0 / SimulationClock::MinSpeed;
+    if (!(settings.dayDurationSeconds >= minDaySeconds) || settings.dayDurationSeconds > maxDaySeconds)
+      throw std::invalid_argument("simulation.dayDurationSeconds must be between " +
+        std::to_string(static_cast<int>(std::ceil(minDaySeconds))) + " and " + std::to_string(static_cast<int>(maxDaySeconds)) +
+        " (real seconds for 24 simulated hours)");
+
+    if (!(settings.dayStartHour >= 0.0) || settings.dayStartHour >= 24.0)
+      throw std::invalid_argument("simulation.dayStartHour must be between 0 and 24 (excluded)");
+
+    if (settings.numberOfFloors > 60)
+      throw std::invalid_argument("building.numberOfFloors must be at most 60");
 
     if (settings.maxPeoplePerElevator == 0)
       throw std::invalid_argument("elevator.maxPeople must be greater than 0");
-  }
 }
 
 bool Configuration::LoadFromFile(const std::string& path)
@@ -175,8 +197,21 @@ bool Configuration::LoadFromFile(const std::string& path)
     throw std::runtime_error("Configuration file '" + path + "' not found or empty");
 
   Settings settings = g_settings;
+  ParseJson(json, settings);
+  g_settings = settings;
+  return true;
+}
+
+void Configuration::ParseJson(const std::string& json, Settings& settings)
+{
   unsigned int value = 0;
   std::string text;
+
+  // The simulated time line changed in this fork: refuse the old keys instead of silently ignoring them.
+  if (json.find("\"simulationDayDurationMs\"") != std::string::npos || json.find("\"timeScale\"") != std::string::npos)
+    throw std::invalid_argument(
+      "simulationDayDurationMs and timeScale have been replaced by dayDurationSeconds "
+      "(real seconds for 24 simulated hours, e.g. 1440 = one day in 24 minutes)");
 
   if (FindUnsigned(json, "numberOfElevators", value))
     settings.numberOfElevators = value;
@@ -199,8 +234,8 @@ bool Configuration::LoadFromFile(const std::string& path)
   if (FindUnsigned(json, "numberOfSimulationDays", value))
     settings.numberOfSimulationDays = value;
 
-  if (FindUnsigned(json, "simulationDayDurationMs", value))
-    settings.simulationDayDuration = std::chrono::milliseconds(value);
+  if (FindString(json, "trafficPattern", text))
+    settings.trafficPattern = ParseTrafficPattern(text);
 
   if (FindUnsigned(json, "minDelayBetweenCallsMs", value))
     settings.minDelayBetweenCalls = std::chrono::milliseconds(value);
@@ -220,7 +255,8 @@ bool Configuration::LoadFromFile(const std::string& path)
   if (FindUnsigned(json, "maxPeople", value))
     settings.maxPeoplePerElevator = value;
 
-  FindDouble(json, "timeScale", settings.timeScale);
+  FindDouble(json, "dayDurationSeconds", settings.dayDurationSeconds);
+  FindDouble(json, "dayStartHour", settings.dayStartHour);
 
   if (FindUnsigned(json, "randomSeed", value))
     settings.randomSeed = value;
@@ -237,8 +273,12 @@ bool Configuration::LoadFromFile(const std::string& path)
     settings.logFilePath = text;
 
   Validate(settings);
+}
+
+void Configuration::Apply(const Settings& settings)
+{
+  Validate(settings);
   g_settings = settings;
-  return true;
 }
 
 const Configuration::Settings& Configuration::Get()
@@ -301,9 +341,9 @@ unsigned int Configuration::CallsGenerator::NumberOfSimulationDays()
   return Get().numberOfSimulationDays;
 }
 
-long long Configuration::CallsGenerator::SimulationDayDuration()
+Configuration::CallsGenerator::Pattern Configuration::CallsGenerator::TrafficPattern()
 {
-  return Get().simulationDayDuration.count();
+  return Get().trafficPattern;
 }
 
 long long Configuration::CallsGenerator::MinDelayBetweenCalls()
@@ -343,14 +383,25 @@ bool Configuration::Log::WriteToFile()
     Get().defaultLogType == ILog::LogType::ScreenAndFile;
 }
 
-void Configuration::Simulation::StartClock()
+void Configuration::Log::Override(const ILog::LogType logType, const ILog::TraceLevel minimumLevel)
 {
-  g_simulationStartTime = std::chrono::steady_clock::now();
+  g_settings.defaultLogType = logType;
+  g_settings.traceLevel = std::max(g_settings.traceLevel, minimumLevel);
 }
 
-double Configuration::Simulation::TimeScale()
+void Configuration::Simulation::StartClock()
 {
-  return Get().timeScale;
+  SimulationClock::Reset(InitialSpeed(), static_cast<long long>(DayStartHour() * static_cast<double>(SimulationClock::HourMs)));
+}
+
+double Configuration::Simulation::InitialSpeed()
+{
+  return static_cast<double>(SimulationClock::DayMs) / (Get().dayDurationSeconds * 1000.0);
+}
+
+double Configuration::Simulation::DayStartHour()
+{
+  return Get().dayStartHour;
 }
 
 unsigned int Configuration::Simulation::RandomSeed()
@@ -363,55 +414,39 @@ bool Configuration::Simulation::AutoStop()
   return Get().autoStop;
 }
 
-std::chrono::microseconds Configuration::Simulation::ToRealDuration(const std::chrono::milliseconds simulatedDuration)
+bool Configuration::Simulation::SleepFor(const std::chrono::milliseconds simulatedDuration)
 {
-  const auto realMicroseconds = static_cast<double>(simulatedDuration.count()) * 1000.0 / TimeScale();
-  return std::chrono::microseconds(static_cast<long long>(realMicroseconds));
-}
-
-std::uint64_t Configuration::Simulation::ToSimulatedMs(const std::chrono::microseconds realDuration)
-{
-  const auto simulatedMs = static_cast<double>(realDuration.count()) / 1000.0 * TimeScale();
-  return simulatedMs <= 0.0 ? 0U : static_cast<std::uint64_t>(simulatedMs);
-}
-
-void Configuration::Simulation::SleepFor(const std::chrono::milliseconds simulatedDuration)
-{
-  std::this_thread::sleep_for(ToRealDuration(simulatedDuration));
+  return SimulationClock::SleepFor(simulatedDuration);
 }
 
 long long Configuration::Simulation::ElapsedMs()
 {
-  return static_cast<long long>(ToSimulatedMs(std::chrono::duration_cast<std::chrono::microseconds>(
-    std::chrono::steady_clock::now() - g_simulationStartTime)));
+  return SimulationClock::Now();
 }
 
 double Configuration::Simulation::CurrentHour()
 {
-  const auto dayDurationMs = static_cast<double>(CallsGenerator::SimulationDayDuration());
-  return std::fmod(static_cast<double>(ElapsedMs()), dayDurationMs) / dayDurationMs * 24.0;
+  const auto timeOfDayMs = SimulationClock::TimeOfDayMs() % SimulationClock::DayMs;
+  return static_cast<double>(timeOfDayMs) / static_cast<double>(SimulationClock::HourMs);
 }
 
 unsigned int Configuration::Simulation::CurrentDay()
 {
-  const auto dayDurationMs = CallsGenerator::SimulationDayDuration();
-  const auto elapsedDays = static_cast<unsigned int>(ElapsedMs() / dayDurationMs);
-
+  const auto elapsedDays = static_cast<unsigned int>(SimulationClock::TimeOfDayMs() / SimulationClock::DayMs);
   return std::min(elapsedDays + 1U, CallsGenerator::NumberOfSimulationDays());
 }
 
 bool Configuration::Simulation::Completed()
 {
-  const auto targetDurationMs =
-    CallsGenerator::SimulationDayDuration() * static_cast<long long>(CallsGenerator::NumberOfSimulationDays());
-
-  return ElapsedMs() >= targetDurationMs;
+  const auto lastMidnightMs = SimulationClock::DayMs * static_cast<long long>(CallsGenerator::NumberOfSimulationDays());
+  return SimulationClock::TimeOfDayMs() >= lastMidnightMs;
 }
 
 std::string Configuration::Simulation::CurrentDayTimeLabel()
 {
-  const auto hour = CurrentHour();
-  const auto wholeMinutes = static_cast<unsigned int>(hour * 60.0) % (24U * 60U);
+  const auto completed = Completed();
+  // Once the last day is over the clock is shown at its end (24:00) instead of wrapping to the next day.
+  const auto wholeMinutes = completed ? 24U * 60U : static_cast<unsigned int>(CurrentHour() * 60.0) % (24U * 60U);
   const auto hours = wholeMinutes / 60U;
   const auto minutes = wholeMinutes % 60U;
 

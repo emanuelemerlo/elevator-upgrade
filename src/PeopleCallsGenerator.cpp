@@ -7,6 +7,7 @@
 #include "Watchdog.h"
 #include "Configuration.h"
 #include "Statistics.h"
+#include "TrafficProfile.h"
 
 #include <random>
 #include <chrono>
@@ -30,70 +31,26 @@ PeopleCallsGenerator::~PeopleCallsGenerator()
 
 namespace
 {
-  double DailyTrafficWeight(const double hour)
-  {
-    const auto peak = [hour](const double center, const double width, const double weight)
-    {
-      const auto distance = hour - center;
-      return weight * std::exp(-(distance * distance) / (2.0 * width * width));
-    };
-
-    const auto morning = peak(8.25, 1.25, 1.00);
-    const auto lunch = peak(12.50, 1.00, 0.70);
-    const auto dinner = peak(19.00, 1.35, 0.75);
-    return 0.25 + morning + lunch + dinner;
-  }
-
-  double AverageDailyTrafficWeight()
-  {
-    constexpr unsigned int SamplesPerDay = 96U;
-
-    double totalWeight = 0.0;
-    for (auto sample = 0U; sample < SamplesPerDay; ++sample)
-    {
-      const auto hour = static_cast<double>(sample) / static_cast<double>(SamplesPerDay) * 24.0;
-      totalWeight += DailyTrafficWeight(hour);
-    }
-
-    return totalWeight / static_cast<double>(SamplesPerDay);
-  }
-
-  double DailyTrafficIntensity()
-  {
-    return std::max(0.1, DailyTrafficWeight(Configuration::Simulation::CurrentHour()) / AverageDailyTrafficWeight());
-  }
-
-  std::chrono::milliseconds DelayForDailyProfile(const double jitter)
+  // Delay before the next call (simulated time): arrivals are random (exponential, i.e. a Poisson process) around
+  // the average delay of the current hour, which follows the daily profile, then kept in the configured range.
+  std::chrono::milliseconds DelayForDailyProfile(std::default_random_engine& generator)
   {
     const auto averageCallsPerDay = static_cast<double>(Configuration::CallsGenerator::AverageCallsPerDay());
-    const auto simulatedDayDurationMs = static_cast<double>(Configuration::CallsGenerator::SimulationDayDuration());
-    const auto averageDelayMs = simulatedDayDurationMs / averageCallsPerDay;
-    const auto profiledDelayMs = averageDelayMs / DailyTrafficIntensity() * jitter;
+    const auto averageDelayMs = static_cast<double>(SimulationClock::DayMs) / averageCallsPerDay;
+    const auto profiledDelayMs = averageDelayMs / TrafficProfile::Intensity(Configuration::Simulation::CurrentHour());
 
-    const auto minDelayMs = Configuration::CallsGenerator::MinDelayBetweenCalls();
-    const auto maxDelayMs = Configuration::CallsGenerator::MaxDelayBetweenCalls();
+    std::exponential_distribution<double> arrival(1.0 / profiledDelayMs);
 
-    const long long lowerBound = std::max(1LL, minDelayMs);
-    const long long upperBound = std::max(lowerBound, maxDelayMs);
+    const long long lowerBound = std::max(1LL, Configuration::CallsGenerator::MinDelayBetweenCalls());
+    const long long upperBound = std::max(lowerBound, Configuration::CallsGenerator::MaxDelayBetweenCalls());
+    const auto delayMs = std::min(static_cast<double>(upperBound), std::max(static_cast<double>(lowerBound), arrival(generator)));
 
-    long long boundedDelayMs = static_cast<long long>(profiledDelayMs);
-    if (boundedDelayMs < lowerBound)
-      boundedDelayMs = lowerBound;
-    if (boundedDelayMs > upperBound)
-      boundedDelayMs = upperBound;
-
-    return std::chrono::milliseconds(boundedDelayMs);
+    return std::chrono::milliseconds(static_cast<long long>(delayMs));
   }
 
   bool MaxConcurrentCallsReached()
   {
     return Statistics::ActiveCalls() >= Configuration::CallsGenerator::MaxConcurrentCalls();
-  }
-
-  // Delays are configured in simulated time: the time scale decides how long they last for real.
-  std::chrono::microseconds Real(const std::chrono::milliseconds simulatedDuration)
-  {
-    return Configuration::Simulation::ToRealDuration(simulatedDuration);
   }
 
   unsigned int GeneratorSeed()
@@ -146,16 +103,18 @@ void PeopleCallsGenerator::RandomGeneratorThread::CycleFunction(PeopleCallsGener
   if (peopleCallsGenerator == nullptr || StopRequested())
     return;
 
-  if (!SleepFor(Real(2s))) // arbitrary delay before start, interrupted by a stop request
+  if (!Configuration::Simulation::SleepFor(2s)) // arbitrary delay before start, interrupted by an abort
+  {
+    peopleCallsGenerator->m_finished = true;
     return;
+  }
 
   // Same seed -> same sequence of calls (floors and delays); the seed is traced to reproduce a run.
   const auto seed = GeneratorSeed();
   peopleCallsGenerator->m_log.Trace("Random seed: " + std::to_string(seed), Log::TraceLevel::Info);
   std::default_random_engine generator(seed);
 
-  const std::uniform_int_distribution<Floors::FloorNumber> randomFloor(Floors::BottomFloor, Floors::TopFloor());
-  const std::uniform_real_distribution<double> randomJitter(0.75, 1.25);
+  const auto pattern = Configuration::CallsGenerator::TrafficPattern();
 
   const auto maxCalls = Configuration::CallsGenerator::NumberOfCalls();
   unsigned int generatedCalls = 0U;
@@ -176,21 +135,15 @@ void PeopleCallsGenerator::RandomGeneratorThread::CycleFunction(PeopleCallsGener
 
     if (MaxConcurrentCallsReached())
     {
-      if (!SleepFor(Real(DelayForDailyProfile(1.0))))
+      if (!Configuration::Simulation::SleepFor(DelayForDailyProfile(generator)))
         break;
 
       continue;
     }
 
-    std::shared_ptr<Call> call;
-
-    do
-    {
-      auto getStartFloor = std::bind(randomFloor, std::ref(generator));
-      auto getDestinationFloor = std::bind(randomFloor, std::ref(generator));
-
-      call = std::make_shared<Call>(getStartFloor(), getDestinationFloor());
-    } while (!call->IsValid()); // only valid calls
+    // Who travels depends on the hour: arrivals in the morning, departures in the evening (see TrafficProfile).
+    const auto trip = TrafficProfile::PickTrip(generator, Configuration::Simulation::CurrentHour(), pattern);
+    const auto call = std::make_shared<Call>(trip.first, trip.second);
 
     peopleCallsGenerator->m_log.Trace("Generated call " + call->ToString());
 
@@ -199,11 +152,10 @@ void PeopleCallsGenerator::RandomGeneratorThread::CycleFunction(PeopleCallsGener
     // Assign call synchronously to avoid unbounded thread creation
     peopleCallsGenerator->m_management.AssignCall(call);
     ++generatedCalls;
+    ++peopleCallsGenerator->m_generatedCalls;
 
-    auto getJitter = std::bind(randomJitter, std::ref(generator));
-
-    // Interruptible sleep: a shutdown request must not wait for the next call delay
-    if (!SleepFor(Real(DelayForDailyProfile(getJitter()))))
+    // The sleep returns false when the simulation is aborted: the generator must not wait for the next call.
+    if (!Configuration::Simulation::SleepFor(DelayForDailyProfile(generator)))
       break;
 
   } while (!StopRequested());
@@ -223,8 +175,11 @@ void PeopleCallsGenerator::FixedGeneratorThread::CycleFunction(PeopleCallsGenera
     Configuration::CallsGenerator::MinDelayBetweenCalls(),
     Configuration::CallsGenerator::MaxDelayBetweenCalls());
 
-  if (!SleepFor(Real(2s))) // arbitrary delay before start, interrupted by a stop request
+  if (!Configuration::Simulation::SleepFor(2s)) // arbitrary delay before start, interrupted by an abort
+  {
+    peopleCallsGenerator->m_finished = true;
     return;
+  }
 
   const auto topFloor = Floors::TopFloor();
   const auto bottomFloor = Floors::BottomFloor;
@@ -269,11 +224,12 @@ void PeopleCallsGenerator::FixedGeneratorThread::CycleFunction(PeopleCallsGenera
 
     // Assign call synchronously
     peopleCallsGenerator->m_management.AssignCall(call);
+    ++peopleCallsGenerator->m_generatedCalls;
 
     auto getDelay = std::bind(randomDelay, std::ref(generator));
 
-    // Interruptible sleep: a shutdown request must not wait for the remaining calls
-    if (!SleepFor(Real(std::chrono::milliseconds(getDelay()))))
+    // The sleep returns false when the simulation is aborted: the remaining calls are not generated.
+    if (!Configuration::Simulation::SleepFor(std::chrono::milliseconds(getDelay())))
       break;
   }
 

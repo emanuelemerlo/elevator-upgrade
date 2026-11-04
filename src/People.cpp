@@ -2,6 +2,7 @@
 #include "Log.h"
 #include "Statistics.h"
 #include "Configuration.h"
+#include "EventBus.h"
 
 #include <map>
 #include <sstream>
@@ -11,11 +12,14 @@ void People::EnterAndExit(
   const Floors::FloorNumber currentFloor, 
   const Direction currentDirection, 
   const std::string& elevatorId,
-  std::vector<std::shared_ptr<Call>>* refusedPassengers)
+  std::vector<std::shared_ptr<Call>>* refusedPassengers,
+  const bool allowBoarding)
 {
   waitingPeople.Trace(currentFloor);
-  Exit(currentFloor);
-  Enter(waitingPeople, currentFloor, currentDirection, elevatorId, refusedPassengers);
+  Exit(currentFloor, elevatorId);
+
+  if (allowBoarding)
+    Enter(waitingPeople, currentFloor, currentDirection, elevatorId, refusedPassengers);
 }
 
 void People::Insert(const std::shared_ptr<Call>& call)
@@ -26,6 +30,49 @@ void People::Insert(const std::shared_ptr<Call>& call)
   Statistics::RecordQueuedCall();
 
   push_front(call);
+
+  EventBus::Publish("call", Json::Writer::Object()
+    .Add("id", static_cast<unsigned long long>(call->GetId()))
+    .Add("from", call->GetStartFloor())
+    .Add("to", call->GetDestinationFloor())
+    .Add("manual", call->IsManual()));
+}
+
+void People::InsertEvacuated(const std::shared_ptr<Call>& call)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  push_front(call);
+}
+
+std::vector<std::shared_ptr<Call>> People::TakeAll()
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  std::vector<std::shared_ptr<Call>> people(begin(), end());
+  clear();
+  return people;
+}
+
+std::vector<std::shared_ptr<Call>> People::ReleaseAssigned(const std::string& elevatorId)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+
+  std::vector<std::shared_ptr<Call>> released;
+  for (const auto& person : *this)
+  {
+    if (person->GetAssignedElevator() == elevatorId)
+    {
+      person->SetAssignedElevator("?");
+      released.push_back(person);
+    }
+  }
+
+  return released;
+}
+
+void People::Clear()
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  clear();
 }
 
 void People::Trace(const Floors::FloorNumber currentFloor)
@@ -136,6 +183,10 @@ void People::Enter(
         // The cabin is full: the passenger stays at the floor and must be dispatched again,
         // otherwise nobody would come back for him (his pickup stop has just been cleared).
         message << "FULL ";
+        EventBus::Publish("refused", Json::Writer::Object()
+          .Add("id", static_cast<unsigned long long>((*person)->GetId()))
+          .Add("elevator", elevatorId)
+          .Add("floor", currentFloor));
         if (refusedPassengers != nullptr)
           refusedPassengers->push_back(*person);
         ++person;
@@ -144,8 +195,16 @@ void People::Enter(
 
       message << (*person)->ToString();
 
-      Statistics::RecordBoardedPassenger(std::chrono::milliseconds(
-        Configuration::Simulation::ToSimulatedMs((*person)->GetElapsedSinceQueued())));
+      const auto waitingTime = (*person)->GetWaitingTime();
+      if ((*person)->MarkBoarded())
+        Statistics::RecordBoardedPassenger(waitingTime);
+
+      EventBus::Publish("board", Json::Writer::Object()
+        .Add("id", static_cast<unsigned long long>((*person)->GetId()))
+        .Add("elevator", elevatorId)
+        .Add("floor", currentFloor)
+        .Add("waitMs", static_cast<long long>(waitingTime.count())));
+
       push_front(*person);
       Statistics::RecordCabinPeopleCount(size());
 
@@ -159,7 +218,7 @@ void People::Enter(
   m_log.Trace(message);
 }
 
-void People::Exit(const Floors::FloorNumber currentFloor)
+void People::Exit(const Floors::FloorNumber currentFloor, const std::string& elevatorId)
 {
   std::stringstream message;
   message << "People exit to floor " << std::to_string(currentFloor) << ": ";
@@ -172,8 +231,14 @@ void People::Exit(const Floors::FloorNumber currentFloor)
     if ((*person)->GetDestinationFloor() == currentFloor)
     {
       message << (*person)->ToString();
-      Statistics::RecordCompletedPassenger(std::chrono::milliseconds(
-        Configuration::Simulation::ToSimulatedMs((*person)->GetElapsedSinceQueued())));
+      const auto journeyTime = (*person)->GetWaitingTime();
+      Statistics::RecordCompletedPassenger(journeyTime);
+
+      EventBus::Publish("arrive", Json::Writer::Object()
+        .Add("id", static_cast<unsigned long long>((*person)->GetId()))
+        .Add("elevator", elevatorId)
+        .Add("floor", currentFloor)
+        .Add("journeyMs", static_cast<long long>(journeyTime.count())));
       person = erase(person);
       continue;
     }

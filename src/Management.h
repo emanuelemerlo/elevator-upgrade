@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <atomic>
 #include <thread>
+#include <string>
 
 #include "Elevator.h"
 
@@ -38,8 +39,17 @@ public:
   // the call will be enqueued into the pending queue when all elevators are full.
   bool AssignCallInternal(const class std::shared_ptr<class Call>& call, bool enqueueIfCapacityLimited);
 
+  // Asks every cabin to stop without waiting (Shutdown() waits for them).
+  void RequestShutdown();
   void Shutdown();
   void TraceStatistics();
+  // The final report as text lines (also used by the web interface).
+  std::vector<std::string> BuildReport() const;
+
+  // Puts a cabin out of service or back into service. Returns false if the id is unknown.
+  bool SetOutOfOrder(const std::string& elevatorId, bool outOfOrder);
+  // Calls waiting for a cabin with enough capacity (or for a cabin in service).
+  std::size_t PendingCallsCount() const;
 
   std::vector<ElevatorSnapshot> GetElevatorSnapshots() const;
 

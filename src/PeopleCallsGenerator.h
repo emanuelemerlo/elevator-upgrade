@@ -56,6 +56,7 @@ public:
 
   // True when the generator has produced every call it had to produce (or has been stopped).
   bool Finished() const { return m_finished; }
+  unsigned int GeneratedCalls() const { return m_generatedCalls; }
 
 private:
   class Management& m_management;
@@ -63,6 +64,7 @@ private:
   Log m_log;
 
   std::atomic_bool m_finished{ false };
+  std::atomic_uint m_generatedCalls{ 0U };
 
   std::unique_ptr<WorkerThread<PeopleCallsGenerator>> m_generatorThread;
 };

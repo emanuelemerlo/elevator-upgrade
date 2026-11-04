@@ -10,9 +10,11 @@
         "-pthread",
         "-Wall",
         "-std=c++17",
+        "src/AssignmentOptimizer.cpp",
         "src/Configuration.cpp",
         "src/ConsoleView.cpp",
         "src/Elevator.cpp",
+        "src/EventBus.cpp",
         "src/Floors.cpp",
         "src/Log.cpp",
         "src/LogBase.cpp",
@@ -22,10 +24,15 @@
         "src/Management.cpp",
         "src/People.cpp",
         "src/PeopleCallsGenerator.cpp",
+        "src/Simulation.cpp",
+        "src/SimulationClock.cpp",
         "src/Statistics.cpp",
         "src/SymbolicInterface.cpp",
+        "src/TrafficProfile.cpp",
+        "src/WebServer.cpp",
         "-o",
-        "Elevator.exe"
+        "Elevator.exe",
+        "-lws2_32"
       ],
       "group": {
         "kind": "build",
@@ -51,6 +58,19 @@
       "label": "Run Elevator",
       "type": "shell",
       "command": "${workspaceFolder}\\Elevator.exe",
+      "dependsOn": "Build Elevator",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Elevator (web)",
+      "type": "shell",
+      "command": "${workspaceFolder}\\Elevator.exe",
+      "args": [
+        "--web"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "dependsOn": "Build Elevator",
       "problemMatcher": []
     }

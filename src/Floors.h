@@ -50,6 +50,8 @@ public:
   // cabin never makes an empty stop at a destination floor before the passenger is on board.
   bool SetPickupStop(const class std::shared_ptr<class Call>& call);
   void ClearStop(const FloorNumber floor, const Direction direction);
+  void ClearAllStops();
+  FloorStops GetStops() const;
 
   FloorNumber GetNextStop(const FloorNumber currentFloor, Direction& currentDirection);
   std::size_t CountStops() const;

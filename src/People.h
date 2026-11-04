@@ -28,13 +28,21 @@ public:
 
 public:
   void Insert(const std::shared_ptr<Call>& call);
+  // Puts back on a floor a passenger who already queued (evacuated from a cabin): no new call is counted.
+  void InsertEvacuated(const std::shared_ptr<Call>& call);
+  // Removes and returns every passenger (used to evacuate a cabin put out of order).
+  std::vector<std::shared_ptr<Call>> TakeAll();
+  // Unassigns the waiting passengers assigned to the given elevator and returns them, atomically.
+  std::vector<std::shared_ptr<Call>> ReleaseAssigned(const std::string& elevatorId);
+  void Clear();
 
   void EnterAndExit(
     People& waitingPeople, 
     const Floors::FloorNumber currentFloor, 
     const Direction currentDirection, 
     const std::string& elevatorId,
-    std::vector<std::shared_ptr<Call>>* refusedPassengers = nullptr);
+    std::vector<std::shared_ptr<Call>>* refusedPassengers = nullptr,
+    bool allowBoarding = true);
 
   void Trace(const Floors::FloorNumber currentFloor = Floors::InvalidFloor);
 
@@ -57,7 +65,7 @@ private:
     const std::string& elevatorId,
     std::vector<std::shared_ptr<Call>>* refusedPassengers);
 
-  void Exit(const Floors::FloorNumber currentFloor);
+  void Exit(const Floors::FloorNumber currentFloor, const std::string& elevatorId);
 
 private:
   mutable std::mutex m_mutex;

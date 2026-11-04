@@ -15,6 +15,7 @@
     <ClCompile Include="src\Configuration.cpp" />
     <ClCompile Include="src\ConsoleView.cpp" />
     <ClCompile Include="src\Elevator.cpp" />
+    <ClCompile Include="src\EventBus.cpp" />
     <ClCompile Include="src\Floors.cpp" />
     <ClCompile Include="src\Log.cpp" />
     <ClCompile Include="src\LogBase.cpp" />
@@ -24,8 +25,12 @@
     <ClCompile Include="src\Management.cpp" />
     <ClCompile Include="src\People.cpp" />
     <ClCompile Include="src\PeopleCallsGenerator.cpp" />
+    <ClCompile Include="src\Simulation.cpp" />
+    <ClCompile Include="src\SimulationClock.cpp" />
     <ClCompile Include="src\Statistics.cpp" />
     <ClCompile Include="src\SymbolicInterface.cpp" />
+    <ClCompile Include="src\TrafficProfile.cpp" />
+    <ClCompile Include="src\WebServer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\AssignmentOptimizer.h" />
@@ -33,8 +38,10 @@
     <ClInclude Include="src\ConsoleView.h" />
     <ClInclude Include="src\Configuration.h" />
     <ClInclude Include="src\Elevator.h" />
+    <ClInclude Include="src\EventBus.h" />
     <ClInclude Include="src\Floors.h" />
     <ClInclude Include="src\ILog.h" />
+    <ClInclude Include="src\Json.h" />
     <ClInclude Include="src\Log.h" />
     <ClInclude Include="src\LogBase.h" />
     <ClInclude Include="src\LogFileSink.h" />
@@ -42,13 +49,21 @@
     <ClInclude Include="src\Management.h" />
     <ClInclude Include="src\People.h" />
     <ClInclude Include="src\PeopleCallsGenerator.h" />
+    <ClInclude Include="src\Simulation.h" />
+    <ClInclude Include="src\SimulationClock.h" />
     <ClInclude Include="src\Statistics.h" />
     <ClInclude Include="src\SymbolicInterface.h" />
+    <ClInclude Include="src\TrafficProfile.h" />
     <ClInclude Include="src\Watchdog.h" />
+    <ClInclude Include="src\WebServer.h" />
     <ClInclude Include="src\WorkerThread.h" />
+    <ClInclude Include="third_party\cpp-httplib\httplib.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="config.json" />
+    <None Include="web\index.html" />
+    <None Include="web\app.js" />
+    <None Include="web\style.css" />
     <None Include="OPTIMIZATION_NOTES.md" />
   </ItemGroup>
   <PropertyGroup Label="Globals">

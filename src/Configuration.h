@@ -27,6 +27,13 @@ namespace Configuration
      */
     enum class Type { Fixed, Random };
 
+    /**
+     * \brief Who travels when during the simulated day (see TrafficProfile).
+     *        Uniform: random origin and destination at any hour (the original model).
+     *        Office: morning arrivals from the lobby, lunch in both directions, evening departures to the lobby.
+     *        Residential: the opposite of Office (people leave home in the morning and come back in the evening).
+     */
+    enum class Pattern { Uniform, Office, Residential };
   }
 
   struct Settings
@@ -39,19 +46,23 @@ namespace Configuration
     unsigned int averageCallsPerDay{ 600 };
     unsigned int maxConcurrentCalls{ 600 };
     unsigned int numberOfSimulationDays{ 1 };
-    std::chrono::milliseconds simulationDayDuration{ std::chrono::minutes(2) };
-    std::chrono::milliseconds minDelayBetweenCalls{ std::chrono::seconds(3) };
-    std::chrono::milliseconds maxDelayBetweenCalls{ std::chrono::seconds(10) };
+    CallsGenerator::Pattern trafficPattern{ CallsGenerator::Pattern::Office };
+    // Delays between two generated calls are drawn from the daily profile, then kept in this range (simulated ms).
+    std::chrono::milliseconds minDelayBetweenCalls{ std::chrono::milliseconds(500) };
+    std::chrono::milliseconds maxDelayBetweenCalls{ std::chrono::minutes(15) };
 
+    // Durations of the cabins, in simulated milliseconds (the same time line as the 24 hours of the day).
     std::chrono::milliseconds timeToReachTheNextFloor{ std::chrono::seconds(2) };
-    std::chrono::milliseconds enterAndExitTime{ std::chrono::seconds(2) };
-    unsigned int maxPeoplePerElevator{ 8 };
+    std::chrono::milliseconds enterAndExitTime{ std::chrono::seconds(3) };
+    unsigned int maxPeoplePerElevator{ 12 };
     // Time needed by the doors to open or to close (each transition), in simulated milliseconds.
-    std::chrono::milliseconds doorTransitionTime{ std::chrono::seconds(1) };
+    std::chrono::milliseconds doorTransitionTime{ std::chrono::milliseconds(1500) };
 
-    // Simulation speed: 1.0 = real time, 10.0 = the simulated clock runs ten times faster than the wall clock.
-    // Every configured duration stays expressed in simulated time, so the results are comparable across speeds.
-    double timeScale{ 1.0 };
+    // How long a whole simulated day (24 hours) lasts on the wall clock, in seconds: it sets the initial speed of
+    // the simulated clock (1440 s = 24 minutes = 60x). The speed can be changed at run time from the web interface.
+    double dayDurationSeconds{ 1440.0 };
+    // Time of day at which the simulation starts on day 1 (e.g. 6.5 = 06:30), so that a run does not begin with a night.
+    double dayStartHour{ 6.0 };
     // Seed of the random calls generator: 0 = pick a different seed at every run.
     unsigned int randomSeed{ 0 };
     // Stop the simulation (and print the final report) as soon as all calls have been generated and served.
@@ -63,6 +74,12 @@ namespace Configuration
   };
 
   bool LoadFromFile(const std::string& path);
+  // Reads the settings found in a JSON text over 'settings' (missing keys keep their value) and validates them.
+  void ParseJson(const std::string& json, Settings& settings);
+  // Throws std::invalid_argument with an explanatory message if a value is not acceptable.
+  void Validate(const Settings& settings);
+  // Replaces the current settings. Only allowed while the simulation is not running.
+  void Apply(const Settings& settings);
   const Settings& Get();
 
   namespace Building
@@ -86,30 +103,31 @@ namespace Configuration
     unsigned int AverageCallsPerDay();
     unsigned int MaxConcurrentCalls();
     unsigned int NumberOfSimulationDays();
-    long long SimulationDayDuration();
+    Pattern TrafficPattern();
     long long MinDelayBetweenCalls();
     long long MaxDelayBetweenCalls();
   }
 
   namespace Simulation
   {
+    /** \brief Restarts the simulated clock at the configured start hour and speed. */
     void StartClock();
 
-    double TimeScale();
+    /** \brief Initial speed of the simulated clock: simulated milliseconds per real millisecond. */
+    double InitialSpeed();
+    double DayStartHour();
     unsigned int RandomSeed();
     bool AutoStop();
 
-    /** \brief Converts a simulated duration into the real time to wait for it (honours the time scale). */
-    std::chrono::microseconds ToRealDuration(std::chrono::milliseconds simulatedDuration);
-    /** \brief Converts a measured real duration into simulated milliseconds (honours the time scale). */
-    std::uint64_t ToSimulatedMs(std::chrono::microseconds realDuration);
-    /** \brief Sleeps for a simulated duration. */
-    void SleepFor(std::chrono::milliseconds simulatedDuration);
+    /** \brief Sleeps for a simulated duration. \return false if the simulation has been aborted. */
+    bool SleepFor(std::chrono::milliseconds simulatedDuration);
     /** \brief Simulated time elapsed since StartClock(), in milliseconds. */
     long long ElapsedMs();
 
+    /** \brief Hour of the simulated day, 0.0 - 24.0. */
     double CurrentHour();
     unsigned int CurrentDay();
+    /** \brief True when the last configured day is over (midnight). */
     bool Completed();
     std::string CurrentDayTimeLabel();
   }
@@ -121,5 +139,8 @@ namespace Configuration
     std::string FilePath();
     bool WriteToScreen();
     bool WriteToFile();
+
+    /** \brief Changes where the log is written (e.g. the web mode never draws the console dashboard). */
+    void Override(ILog::LogType logType, ILog::TraceLevel minimumLevel);
   }
 }

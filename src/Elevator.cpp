@@ -3,6 +3,8 @@
 #include "Watchdog.h"
 #include "Configuration.h"
 #include "Statistics.h"
+#include "EventBus.h"
+#include "SimulationClock.h"
 
 Elevator::Elevator(const std::string& id)
 {
@@ -64,7 +66,7 @@ void Elevator::ElevatorThreadFunction()
     if (!m_people.Empty())
       m_log.Trace("** ERROR ** The elevator is in idle but there are still people inside", Log::TraceLevel::Error);
 
-    if (m_shutdownRequested)
+    if (StopRequested())
       break;
 
     {
@@ -76,15 +78,25 @@ void Elevator::ElevatorThreadFunction()
       m_callPending = false;
     }
 
-    if (m_shutdownRequested)
+    if (StopRequested())
       break;
+
+    if (m_outOfOrderRequested)
+    {
+      HandleOutOfOrder();
+      continue;
+    }
+
+    // The cabin has been waiting for a call: its next movements start from now.
+    SimulationClock::RestartThreadTimeline();
 
     auto currentDirection = m_currentDirection.load();
     auto nextFloor = m_floors.GetNextStop(m_currentFloor.load(), currentDirection);
     m_currentDirection = currentDirection;
     m_targetFloor = nextFloor;
 
-    while (Floors::IsValid(nextFloor) && !m_shutdownRequested) // continue until there are stops in current direction and shutdown is not requested
+    // Continue while there are stops, unless a shutdown is requested or the cabin is put out of order.
+    while (Floors::IsValid(nextFloor) && !StopRequested() && !m_outOfOrderRequested)
     {
       currentDirection = m_currentDirection.load();
       m_log.Trace(currentDirection == Direction::Up ? "Current direction: UP" : "Current direction: DOWN");
@@ -106,6 +118,12 @@ void Elevator::ElevatorThreadFunction()
       m_targetFloor = nextFloor;
     }
 
+    if (m_outOfOrderRequested && !StopRequested())
+    {
+      HandleOutOfOrder();
+      continue;
+    }
+
     {
       // Reset the direction only if no call has been assigned in the meantime:
       // AnswerToCall() sets the direction under the same mutex.
@@ -117,7 +135,7 @@ void Elevator::ElevatorThreadFunction()
         m_displayDirection = Direction::None;
       }
     }
-  } while (!m_shutdownRequested);
+  } while (!StopRequested());
 
   m_working = false;
   m_log.Trace("Thread exit", ILog::TraceLevel::Debug);
@@ -133,8 +151,11 @@ bool Elevator::OpenDoors()
 
   if (m_doorsStatus.load() == DoorsStatus::Closed)
   {
+    m_doorsMotionStartMs = SimulationClock::Now();
+    m_doorsMotion = DoorsMotion::Opening;
     Configuration::Simulation::SleepFor(Configuration::Elevator::DoorTransitionTime());
     m_doorsStatus = DoorsStatus::Open;
+    m_doorsMotion = DoorsMotion::None;
     m_log.Trace("Doors open", Log::TraceLevel::Verbose);
   }
 
@@ -151,8 +172,11 @@ bool Elevator::CloseDoors()
 
   if (m_doorsStatus.load() == DoorsStatus::Open)
   {
+    m_doorsMotionStartMs = SimulationClock::Now();
+    m_doorsMotion = DoorsMotion::Closing;
     Configuration::Simulation::SleepFor(Configuration::Elevator::DoorTransitionTime());
     m_doorsStatus = DoorsStatus::Closed;
+    m_doorsMotion = DoorsMotion::None;
     ++m_doorCycles;
     m_log.Trace("Doors closed", Log::TraceLevel::Verbose);
   }
@@ -175,7 +199,9 @@ void Elevator::PeopleEnterAndExit()
   const auto peopleBefore = m_people.Count();
   std::vector<std::shared_ptr<Call>> refusedPassengers;
 
-  m_people.EnterAndExit(Floors::GetPeople(), m_currentFloor.load(), m_currentDirection.load(), m_elevatorId, &refusedPassengers);
+  // A cabin going out of order lets its passengers out but does not take anybody in.
+  m_people.EnterAndExit(Floors::GetPeople(), m_currentFloor.load(), m_currentDirection.load(), m_elevatorId,
+    &refusedPassengers, !m_outOfOrderRequested);
 
   RestoreDestinationStops();
 
@@ -245,7 +271,10 @@ void Elevator::Move(const Floors::FloorNumber firstRequestedFloor)
       {
         m_displayDirection = Direction::Up;
         m_log.Trace("Moving Up [" + std::to_string(currentFloor) + "]", Log::TraceLevel::Verbose);
-        Configuration::Simulation::SleepFor(Configuration::Elevator::TimeToReachTheNextFloor());
+        m_motionStartMs = SimulationClock::Now();
+        m_motionToFloor = currentFloor + 1;
+        if (!Configuration::Simulation::SleepFor(Configuration::Elevator::TimeToReachTheNextFloor()))
+          break; // simulation aborted
         m_currentFloor = currentFloor + 1;
         ++m_totalFloorsTravelled;
       }
@@ -253,7 +282,10 @@ void Elevator::Move(const Floors::FloorNumber firstRequestedFloor)
       {
         m_displayDirection = Direction::Down;
         m_log.Trace("Moving Down [" + std::to_string(currentFloor) + "]", Log::TraceLevel::Verbose);
-        Configuration::Simulation::SleepFor(Configuration::Elevator::TimeToReachTheNextFloor());
+        m_motionStartMs = SimulationClock::Now();
+        m_motionToFloor = currentFloor - 1;
+        if (!Configuration::Simulation::SleepFor(Configuration::Elevator::TimeToReachTheNextFloor()))
+          break; // simulation aborted
         m_currentFloor = currentFloor - 1;
         ++m_totalFloorsTravelled;
       }
@@ -281,8 +313,10 @@ void Elevator::Move(const Floors::FloorNumber firstRequestedFloor)
         }
       }
 
-    } while (m_currentFloor.load() != requestedFloor && !m_shutdownRequested);
+      // Out of order: the cabin cannot stop between two floors, it stops at the floor it has just reached.
+    } while (m_currentFloor.load() != requestedFloor && !StopRequested() && !m_outOfOrderRequested);
 
+    m_motionToFloor = Floors::InvalidFloor;
     m_displayDirection = m_currentDirection.load();
 
     const std::string message = "Arrived on the floor " + std::to_string(m_currentFloor.load());
@@ -338,6 +372,97 @@ void Elevator::SetId(std::string id)
   m_log.SetTraceId(m_name);
 }
 
+bool Elevator::StopRequested() const
+{
+  return m_shutdownRequested.load() || SimulationClock::Aborted();
+}
+
+void Elevator::SetOutOfOrder(const bool outOfOrder)
+{
+  {
+    std::lock_guard<std::mutex> lock(m_goMutex);
+
+    if (m_outOfOrderRequested.load() == outOfOrder)
+      return;
+
+    m_outOfOrderRequested = outOfOrder;
+    m_callPending = true; // wakes the cabin if it is idle
+  }
+
+  m_log.Trace(outOfOrder ? "Out of order requested" : "Back in service requested", Log::TraceLevel::Info);
+  m_go.notify_all();
+}
+
+void Elevator::HandleOutOfOrder()
+{
+  const auto floor = m_currentFloor.load();
+  m_targetFloor = Floors::InvalidFloor;
+  m_status = ElevatorStatus::Idle; // doors can be operated only by an idle cabin
+
+  // Everybody inside gets out here and waits for another cabin, keeping destination and queue time.
+  const auto onboard = m_people.TakeAll();
+  if (!onboard.empty())
+    OpenDoors();
+
+  for (const auto& passenger : onboard)
+  {
+    passenger->Evacuate(floor);
+    Floors::GetPeople().InsertEvacuated(passenger);
+
+    EventBus::Publish("evacuate", Json::Writer::Object()
+      .Add("id", static_cast<unsigned long long>(passenger->GetId()))
+      .Add("elevator", m_elevatorId)
+      .Add("floor", floor));
+  }
+
+  // Passengers still waiting for this cabin go back to the dispatcher. Boarding happens only on this
+  // thread, so nobody can board this cabin between the release and the out of order state.
+  const auto waiting = Floors::GetPeople().ReleaseAssigned(m_elevatorId);
+  m_floors.ClearAllStops();
+
+  CloseDoors();
+
+  m_status = ElevatorStatus::OutOfOrder;
+  m_currentDirection = Direction::None;
+  m_displayDirection = Direction::None;
+
+  m_log.Trace("Out of order at floor " + std::to_string(floor) + ": " + std::to_string(onboard.size()) +
+    " passengers evacuated, " + std::to_string(waiting.size()) + " calls reassigned", Log::TraceLevel::Warning);
+
+  EventBus::Publish("fault", Json::Writer::Object()
+    .Add("elevator", m_elevatorId)
+    .Add("floor", floor)
+    .Add("evacuated", static_cast<unsigned long long>(onboard.size()))
+    .Add("reassigned", static_cast<unsigned long long>(waiting.size())));
+
+  if (m_refusedCallHandler)
+  {
+    for (const auto& passenger : onboard)
+      m_refusedCallHandler(passenger);
+
+    for (const auto& passenger : waiting)
+      m_refusedCallHandler(passenger);
+  }
+
+  {
+    std::unique_lock<std::mutex> lock(m_goMutex);
+    m_go.wait(lock, [this]() { return !m_outOfOrderRequested.load() || m_shutdownRequested.load(); });
+    m_callPending = false;
+  }
+
+  m_status = ElevatorStatus::Idle;
+
+  if (m_shutdownRequested)
+    return;
+
+  m_log.Trace("Back in service", Log::TraceLevel::Info);
+  EventBus::Publish("repair", Json::Writer::Object().Add("elevator", m_elevatorId).Add("floor", m_currentFloor.load()));
+
+  // The cabin can take calls again: the ones waiting for capacity may now fit.
+  if (m_capacityFreedHandler)
+    m_capacityFreedHandler();
+}
+
 std::size_t Elevator::GetCommittedPeopleCount() const
 {
   return m_people.Count() + Floors::GetPeople().CountByAssignedElevator(m_elevatorId);
@@ -348,7 +473,8 @@ ElevatorDispatchState Elevator::GetDispatchState() const
   ElevatorDispatchState state;
   state.floor = m_currentFloor.load();
   state.direction = m_currentDirection.load();
-  state.status = m_status.load();
+  // A cabin going out of order must not receive calls any more, even before it has stopped.
+  state.status = m_outOfOrderRequested.load() ? ElevatorStatus::OutOfOrder : m_status.load();
   state.doorsOpen = m_doorsStatus.load() == DoorsStatus::Open;
   state.targetFloor = m_targetFloor.load();
   state.onboard = m_people.Snapshot();
@@ -357,5 +483,24 @@ ElevatorDispatchState Elevator::GetDispatchState() const
 
 ElevatorSnapshot Elevator::GetSnapshot() const
 {
-  return { m_elevatorId, m_name, m_currentFloor.load(), m_status.load(), m_displayDirection.load(), m_people.Count() };
+  ElevatorSnapshot snapshot;
+  snapshot.id = m_elevatorId;
+  snapshot.name = m_name;
+  snapshot.currentFloor = m_currentFloor.load();
+  snapshot.status = m_status.load();
+  snapshot.direction = m_displayDirection.load();
+  snapshot.outOfOrder = m_outOfOrderRequested.load();
+  snapshot.doorsOpen = m_doorsStatus.load() == DoorsStatus::Open;
+  snapshot.doorsMotion = m_doorsMotion.load();
+  snapshot.doorsMotionStartMs = m_doorsMotionStartMs.load();
+  snapshot.motionToFloor = snapshot.status == ElevatorStatus::Moving ? m_motionToFloor.load() : Floors::InvalidFloor;
+  snapshot.motionStartMs = m_motionStartMs.load();
+  snapshot.targetFloor = m_targetFloor.load();
+  snapshot.passengers = m_people.Snapshot();
+  snapshot.peopleCount = snapshot.passengers.size();
+  snapshot.stops = m_floors.GetStops();
+  snapshot.travelledFloors = m_totalFloorsTravelled.load();
+  snapshot.runs = m_runCounter.load();
+  snapshot.doorCycles = m_doorCycles.load();
+  return snapshot;
 }

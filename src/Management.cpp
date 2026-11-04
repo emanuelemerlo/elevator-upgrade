@@ -7,6 +7,7 @@
 #include "LogFileSink.h"
 #include "Statistics.h"
 #include "AssignmentOptimizer.h"
+#include "EventBus.h"
 
 #include <map>
 #include <random>
@@ -101,7 +102,7 @@ namespace
         if (onboard.count(person.get()) != 0U)
           continue;
 
-        const auto waitedMs = static_cast<double>(Configuration::Simulation::ToSimulatedMs(person->GetElapsedSinceQueued()));
+        const auto waitedMs = static_cast<double>(person->GetWaitingTime().count());
         committed[index].push_back({ person->GetStartFloor(), person->GetDestinationFloor(), false, waitedMs });
       }
     }
@@ -383,10 +384,8 @@ Management::Management(const unsigned int numberOfElevators)
   // Start pending calls worker
   m_pendingThreadRunning = true;
   m_pendingThread = std::make_unique<std::thread>([this]() {
-    // Retry period when no event wakes the worker up earlier (simulated time, never shorter than 2 ms of real time).
-    const auto fallbackRetry = std::max(
-      Configuration::Simulation::ToRealDuration(std::chrono::milliseconds(100)),
-      std::chrono::microseconds(2000));
+    // Retry period (real time) when no event wakes the worker up earlier: retrying is cheap and harmless.
+    const auto fallbackRetry = std::chrono::milliseconds(20);
 
     std::unique_lock<std::mutex> lock(m_pendingMutex);
 
@@ -480,6 +479,39 @@ void Management::Shutdown()
   m_shutdownCompleted = true;
 }
 
+void Management::RequestShutdown()
+{
+  for (auto& elevator : m_elevators)
+    elevator->RequestShutdown();
+}
+
+bool Management::SetOutOfOrder(const std::string& elevatorId, const bool outOfOrder)
+{
+  const auto elevator = std::find_if(m_elevators.begin(), m_elevators.end(),
+    [&elevatorId](const std::unique_ptr<Elevator>& item) { return item->GetId() == elevatorId; });
+
+  if (elevator == m_elevators.end())
+    return false;
+
+  {
+    // Under the assignment lock: a decision in progress either completes before the cabin is excluded
+    // (and the cabin will hand that call back) or sees the cabin already out of order.
+    std::lock_guard<std::mutex> lock(m_assignMutex);
+    (*elevator)->SetOutOfOrder(outOfOrder);
+  }
+
+  if (!outOfOrder)
+    RequestPendingRetry();
+
+  return true;
+}
+
+std::size_t Management::PendingCallsCount() const
+{
+  std::lock_guard<std::mutex> lock(m_pendingMutex);
+  return m_pendingCalls.size();
+}
+
 bool Management::AssignCall(const std::shared_ptr<Call>& call)
 {
   return AssignCallInternal(call, true);
@@ -555,12 +587,22 @@ bool Management::AssignCallInternal(const std::shared_ptr<Call>& call, bool enqu
 
   if (best == nullptr)
   {
-    // Every cabin would exceed its capacity: the call waits in the pending queue.
+    // Every cabin would exceed its capacity (or is out of order): the call waits in the pending queue.
     if (enqueueIfCapacityLimited)
     {
+      const auto inService = std::count_if(states.begin(), states.end(),
+        [](const ElevatorDispatchState& state) { return state.status != ElevatorStatus::OutOfOrder; });
+
       // The event is counted once per call: retries made by the pending worker are not new events.
-      Statistics::RecordCapacityLimitedDecision();
+      // With every cabin out of order the wait is not caused by the capacity.
+      if (inService > 0)
+        Statistics::RecordCapacityLimitedDecision();
+
       EnqueuePendingCall(call);
+
+      EventBus::Publish("pending", Json::Writer::Object()
+        .Add("id", static_cast<unsigned long long>(call->GetId()))
+        .Add("reason", inService > 0 ? "full" : "noService"));
     }
 
     return false;
@@ -590,7 +632,41 @@ bool Management::AssignCallInternal(const std::shared_ptr<Call>& call, bool enqu
   const auto callAssigned = best->elevator->AnswerToCall(call);
 
   if (callAssigned)
+  {
     Statistics::RecordAssignedCall(best->elevator->GetId());
+
+    // The whole decision is published: the cost of every cabin shows why this one has been chosen.
+    auto candidatesJson = Json::Writer::Array();
+    for (std::size_t index = 0U; index < candidates.size(); ++index)
+    {
+      const auto& candidate = candidates[index];
+      auto item = Json::Writer::Object();
+      item.Add("elevator", candidate.elevator->GetId());
+
+      if (states[index].status == ElevatorStatus::OutOfOrder)
+        item.Add("state", "outOfOrder");
+      else if (!candidate.evaluation.feasible)
+        item.Add("state", "full");
+      else
+        item.Add("state", "ok")
+            .Add("costMs", candidate.score, 0)
+            .Add("pickupMs", candidate.evaluation.pickupEtaMs, 0)
+            .Add("onTheWay", candidate.evaluation.onTheWay);
+
+      candidatesJson.Push(item);
+    }
+
+    EventBus::Publish("assign", Json::Writer::Object()
+      .Add("id", static_cast<unsigned long long>(call->GetId()))
+      .Add("from", call->GetStartFloor())
+      .Add("to", call->GetDestinationFloor())
+      .Add("elevator", best->elevator->GetId())
+      .Add("pickupMs", best->evaluation.pickupEtaMs, 0)
+      .Add("dropoffMs", best->evaluation.dropoffEtaMs, 0)
+      .Add("onTheWay", best->evaluation.onTheWay)
+      .Add("retry", !enqueueIfCapacityLimited)
+      .Add("candidates", candidatesJson));
+  }
 
   // "Forced": no cabin could pick the call up without reversing its sweep first.
   Statistics::RecordAssignmentDecision(
@@ -602,6 +678,19 @@ bool Management::AssignCallInternal(const std::shared_ptr<Call>& call, bool enqu
 }
 
 void Management::TraceStatistics()
+{
+  const auto report = BuildReport();
+
+  LogBase::FlushPendingMessages();
+
+  if (Configuration::Log::WriteToScreen())
+    ConsoleView::Instance().WriteFinalReport(report);
+
+  if (Configuration::Log::WriteToFile())
+    WriteFinalReportToFile(report);
+}
+
+std::vector<std::string> Management::BuildReport() const
 {
   const auto statistics = Statistics::GetSnapshot();
   const auto waitDistribution = Statistics::GetWaitDistribution();
@@ -663,7 +752,7 @@ void Management::TraceStatistics()
   // Calls still waiting on the floors when the report is printed: the oldest one tells whether somebody is starving.
   std::uint64_t oldestWaitingMs = 0U;
   for (const auto& person : Floors::GetPeople().Snapshot())
-    oldestWaitingMs = std::max(oldestWaitingMs, Configuration::Simulation::ToSimulatedMs(person->GetElapsedSinceQueued()));
+    oldestWaitingMs = std::max(oldestWaitingMs, static_cast<std::uint64_t>(std::max(0LL, static_cast<long long>(person->GetWaitingTime().count()))));
 
   const auto decisions = static_cast<double>(std::max<std::uint64_t>(1U, statistics.assignmentDecisions));
   const auto noAvailableRatio = static_cast<double>(statistics.noAvailableElevatorDecisions) / decisions;
@@ -792,14 +881,7 @@ void Management::TraceStatistics()
   }
 
   report.push_back(Separator(103));
-
-  LogBase::FlushPendingMessages();
-
-  if (Configuration::Log::WriteToScreen())
-    ConsoleView::Instance().WriteFinalReport(report);
-
-  if (Configuration::Log::WriteToFile())
-    WriteFinalReportToFile(report);
+  return report;
 }
 
 

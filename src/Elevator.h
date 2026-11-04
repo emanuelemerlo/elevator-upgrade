@@ -38,14 +38,38 @@ enum class DoorsStatus
   Closed
 };
 
+enum class DoorsMotion
+{
+  None,
+  Opening,
+  Closing
+};
+
+// Everything a viewer needs to draw a cabin. Times are simulated milliseconds (SimulationClock::Now()).
 struct ElevatorSnapshot
 {
   std::string id;
   std::string name;
-  Floors::FloorNumber currentFloor;
-  ElevatorStatus status;
-  Direction direction;
-  std::size_t peopleCount;
+  Floors::FloorNumber currentFloor{ 0U };
+  ElevatorStatus status{ ElevatorStatus::Idle };
+  Direction direction{ Direction::None };
+  std::size_t peopleCount{ 0U };
+
+  bool outOfOrder{ false };            // requested by the user: the cabin is going (or has gone) out of service
+  bool doorsOpen{ false };
+  DoorsMotion doorsMotion{ DoorsMotion::None };
+  long long doorsMotionStartMs{ 0 };
+  // Floor transition in progress (status Moving): from 'currentFloor' to 'motionToFloor', started at 'motionStartMs'.
+  Floors::FloorNumber motionToFloor{ Floors::InvalidFloor };
+  long long motionStartMs{ 0 };
+  Floors::FloorNumber targetFloor{ Floors::InvalidFloor };
+
+  std::vector<std::shared_ptr<Call>> passengers;
+  FloorStops stops;
+
+  std::uint64_t travelledFloors{ 0U };
+  std::uint64_t runs{ 0U };
+  std::uint64_t doorCycles{ 0U };
 };
 
 // Consistent view of a cabin used by the dispatcher to predict its route.
@@ -82,6 +106,11 @@ public:
   void RequestShutdown();
   void ShutDown();
 
+  // Puts the cabin out of service (it stops at the next floor, lets everybody out and gives its passengers
+  // back to the dispatcher) or back into service. The dispatcher stops considering it immediately.
+  void SetOutOfOrder(bool outOfOrder);
+  bool IsOutOfOrder() const { return m_outOfOrderRequested.load(); }
+
   void SetId(std::string id);
   std::string GetId() const { return m_elevatorId; }
 
@@ -116,6 +145,8 @@ private:
   void Stop();
 
   void RestoreDestinationStops();
+  void HandleOutOfOrder();
+  bool StopRequested() const;
 
 private:
   void ElevatorThreadFunction();
@@ -132,6 +163,11 @@ private:
   std::atomic<Floors::FloorNumber> m_targetFloor{ Floors::InvalidFloor };
 
   std::atomic<DoorsStatus> m_doorsStatus{ DoorsStatus::Closed };
+  std::atomic<DoorsMotion> m_doorsMotion{ DoorsMotion::None };
+  std::atomic<long long> m_doorsMotionStartMs{ 0 };
+  std::atomic<Floors::FloorNumber> m_motionToFloor{ Floors::InvalidFloor };
+  std::atomic<long long> m_motionStartMs{ 0 };
+  std::atomic_bool m_outOfOrderRequested{ false };
 
   // m_callPending is the wake-up predicate of m_go: it is written under m_goMutex so that a
   // call assigned while the thread is busy (or not yet waiting) is never lost.

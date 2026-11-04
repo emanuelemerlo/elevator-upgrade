@@ -209,6 +209,23 @@ void Floors::ClearStop(const FloorNumber floor, const Direction direction)
   }
 }
 
+void Floors::ClearAllStops()
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+
+  for (auto& stop : m_stops)
+  {
+    stop.first = false;
+    stop.second = Direction::None;
+  }
+}
+
+FloorStops Floors::GetStops() const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return m_stops;
+}
+
 void Floors::Trace(const FloorNumber currentFloor)
 {
   std::stringstream message;
