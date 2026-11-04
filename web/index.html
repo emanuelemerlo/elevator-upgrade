@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Elevator playground</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%23252a30%27/%3E%3Cpath d=%27M8 3l3.5 4h-7zM8 13l3.5-4h-7z%27 fill=%27%23f2a93b%27/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="clock" aria-live="off">
+      <span class="clock-time" id="clockTime">--:--</span>
+      <span class="clock-day" id="clockDay">Connecting…</span>
+    </div>
+
+    <div class="transport" role="group" aria-label="Simulation time">
+      <button type="button" class="btn btn-round" id="playPause" title="Pause (Space)" aria-label="Pause">
+        <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-pause"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-play"><path d="M8 5.5v13l11-6.5z"/></svg>
+      </button>
+      <button type="button" class="btn" id="stepButton" title="Advance one simulated minute, then pause (S)">+1 min</button>
+      <label class="speed">
+        <span class="speed-label">Speed</span>
+        <input type="range" id="speedRange" min="0" max="1000" step="1" aria-describedby="speedValue">
+        <output id="speedValue">×60</output>
+      </label>
+      <div class="speed-presets" role="group" aria-label="Speed presets">
+        <button type="button" class="chip" data-speed="1">Real time</button>
+        <button type="button" class="chip" data-speed="60">×60</button>
+        <button type="button" class="chip" data-speed="360">×360</button>
+        <button type="button" class="chip" data-speed="1440">×1440</button>
+      </div>
+    </div>
+
+    <figure class="profile" aria-label="Traffic during the day">
+      <svg id="profileChart" viewBox="0 0 240 48" preserveAspectRatio="none" aria-hidden="true"></svg>
+      <figcaption id="profileCaption">Traffic today</figcaption>
+    </figure>
+  </header>
+
+  <main class="layout">
+    <section class="stage" aria-label="Building">
+      <canvas id="building" role="img" aria-label="Cross-section of the building with the elevator cabins"></canvas>
+      <p class="hint" id="hint">Click a floor to call a lift, then the floor to go to. Click a cabin to put it out of order.</p>
+      <div class="offline" id="offline" hidden>
+        <strong>The simulation is not answering.</strong>
+        <span>Check that <code>Elevator.exe --web</code> is still running; this page reconnects by itself.</span>
+      </div>
+    </section>
+
+    <aside class="console" aria-label="Control panel">
+      <section class="panel">
+        <h2>Right now</h2>
+        <dl class="numbers">
+          <div><dt>Waiting</dt><dd id="statWaiting">0</dd></div>
+          <div><dt>Riding</dt><dd id="statRiding">0</dd></div>
+          <div><dt>Delivered</dt><dd id="statDelivered">0</dd></div>
+          <div><dt>Average wait</dt><dd id="statAvgWait">–</dd></div>
+          <div><dt>95% wait less</dt><dd id="statP95Wait">–</dd></div>
+          <div><dt>Longest wait</dt><dd id="statMaxWait">–</dd></div>
+        </dl>
+        <canvas id="history" class="history" height="64" aria-label="People waiting over the last hours"></canvas>
+        <p class="note" id="historyNote">People waiting, last 3 simulated hours</p>
+      </section>
+
+      <section class="panel">
+        <h2>Dispatcher</h2>
+        <p class="note" id="decisionTitle">Waiting for the first call.</p>
+        <ol class="decision" id="decision"></ol>
+        <p class="note">Each bar is the extra passenger time the call would add to that cabin's route (waiting counts double). The shortest bar wins.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Stir things up</h2>
+        <div class="waves" role="group" aria-label="Traffic waves">
+          <button type="button" class="btn" data-wave="morning">Morning rush</button>
+          <button type="button" class="btn" data-wave="lunch">Lunch break</button>
+          <button type="button" class="btn" data-wave="evening">Evening rush</button>
+          <button type="button" class="btn" data-wave="random">Random crowd</button>
+        </div>
+        <label class="inline">People per wave <input type="number" id="waveCount" min="1" max="500" value="30"></label>
+        <div class="actions">
+          <button type="button" class="btn btn-primary" id="newRunButton">New run…</button>
+          <button type="button" class="btn" id="reportButton">Report</button>
+        </div>
+      </section>
+
+      <section class="panel panel-feed">
+        <div class="feed-head">
+          <h2>What happened</h2>
+          <label class="inline small"><input type="checkbox" id="feedAll"> every passenger</label>
+        </div>
+        <ol class="feed" id="feed" aria-live="polite"></ol>
+      </section>
+    </aside>
+  </main>
+
+  <dialog id="runDialog" aria-labelledby="runDialogTitle">
+    <form method="dialog" id="runForm">
+      <h2 id="runDialogTitle">New run</h2>
+      <p class="note">Starts the building again from the first hour of day 1 with these settings.</p>
+      <div class="form-grid">
+        <label>Cabins <input type="number" name="numberOfElevators" min="1" max="26" required></label>
+        <label>Floors <input type="number" name="numberOfFloors" min="2" max="60" required></label>
+        <label>People per cabin <input type="number" name="maxPeople" min="1" max="60" required></label>
+        <label>Trips per day <input type="number" name="averageCallsPerDay" min="1" max="200000" required></label>
+        <label>Building
+          <select name="trafficPattern">
+            <option value="Office">Office: in at 8, out at 19</option>
+            <option value="Residential">Homes: out at 8, back at 19</option>
+            <option value="Uniform">Random trips all day</option>
+          </select>
+        </label>
+        <label>Days <input type="number" name="numberOfSimulationDays" min="1" max="30" required></label>
+        <label>Start at hour <input type="number" name="dayStartHour" min="0" max="23.5" step="0.5" required></label>
+        <label>A day lasts (minutes) <input type="number" name="dayMinutes" min="0.75" max="14400" step="0.25" required></label>
+        <label>Seed (0 = random) <input type="number" name="randomSeed" min="0" max="999999999"></label>
+      </div>
+      <details>
+        <summary>Cabin timing</summary>
+        <div class="form-grid">
+          <label>Seconds per floor <input type="number" name="floorSeconds" min="0.1" max="60" step="0.1"></label>
+          <label>Door opening (s) <input type="number" name="doorSeconds" min="0" max="60" step="0.1"></label>
+          <label>Boarding time (s) <input type="number" name="dwellSeconds" min="0" max="120" step="0.1"></label>
+        </div>
+      </details>
+      <p class="error" id="runError" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="btn" value="cancel" id="runCancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" value="start">Start new run</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="reportDialog" aria-labelledby="reportTitle" class="report-dialog">
+    <form method="dialog">
+      <h2 id="reportTitle">Report</h2>
+      <p class="note" id="reportNote">The same report the console version prints at the end.</p>
+      <pre id="reportText"></pre>
+      <div class="actions">
+        <button type="button" class="btn" id="reportResume" hidden>Keep running</button>
+        <button type="submit" class="btn btn-primary">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -137,7 +137,7 @@ unsigned int Simulation::AddWave(const TrafficProfile::Wave wave, const unsigned
   for (auto index = 0U; index < count; ++index)
   {
     const auto trip = TrafficProfile::PickTrip(m_random, wave, Configuration::CallsGenerator::TrafficPattern());
-    auto call = std::make_shared<Call>(trip.first, trip.second, true);
+    auto call = std::make_shared<Call>(trip.first, trip.second);
 
     if (!call->IsValid())
       continue;

@@ -1,4 +1,20 @@
-# elevator
+# elevator playground
+
+A fork of [elevator](https://github.com/emanuelemerlo/elevator) that keeps its C++ simulation (threads, dispatcher,
+statistics, console dashboard) and adds a browser interface to play with it: the building runs through a simulated
+day, you can call lifts yourself, send waves of people, put cabins out of order and start new runs with other settings.
+
+```sh
+make
+./Elevator.exe --web        # then open http://127.0.0.1:8080/
+./Elevator.exe              # the original console simulation
+```
+
+See [Web interface](#web-interface) and [Simulated day](#simulated-day) below; the rest of this file is the
+documentation of the original project, updated where the fork changed something.
+
+---
+
 A simple C++ text-based simulation of one or more elevators.
 
 In the 80s an italian magazine called "Commodore Computer Club" launched a competition to create a program that could simulate an elevator on the Commodore 64. I was a child at the time and my computer skills were zero, but I always had the idea of trying it out as a game, so I decided to try again today with C ++ and STL. 
@@ -26,8 +42,19 @@ the screen is replaced by a final report with global statistics, anomaly indicat
 and one row for each configured elevator.
 
 To compare two dispatching strategies or two configurations quickly and repeatably, combine
-`simulation.timeScale` (run faster than real time), `callsGenerator.randomSeed` (same calls every run) and
-`log.defaultLogType: "File"` (no dashboard, the final report is written to the log file).
+`simulation.dayDurationSeconds` (a short day runs faster than real time), `callsGenerator.randomSeed` (same calls every
+run) and `log.defaultLogType: "File"` (no dashboard, the final report is written to the log file).
+
+Command line options:
+
+| Option | Meaning |
+| --- | --- |
+| *(none)* | Console simulation with the symbolic dashboard. |
+| `--web` | Runs the simulation behind the web interface. Press Enter in the console to quit. |
+| `--port N` | Port of the web interface (default `8080`). |
+| `--host ADDRESS` | Address to listen on (default `127.0.0.1`; `0.0.0.0` lets other computers of the network connect). |
+| `--web-root DIR` | Folder with the files of the web interface (default `./web`, so start the program from the repository folder). |
+| `--config FILE` | Configuration file (default `config.json`). |
 
 ### Tests
 
@@ -35,8 +62,76 @@ To compare two dispatching strategies or two configurations quickly and repeatab
 make test
 ```
 
-builds and runs `tests/AssignmentOptimizerTests.cpp`, which checks the route simulation used by the dispatcher
-(arrival times, sweep direction, capacity, shared stops, anti-starvation weight) and the stop logic of the floors.
+builds and runs every program in `tests/`:
+
+- `AssignmentOptimizerTests.cpp` checks the route simulation used by the dispatcher (arrival times, sweep direction,
+  capacity, shared stops, anti-starvation weight) and the stop logic of the floors;
+- `SimulationTests.cpp` checks the simulated clock (pause, step, speed changes, abort, no drift at high speed) and whole
+  runs at high speed: a run ends by itself with every passenger delivered, a cabin put out of order while travelling
+  stops at the next floor and its passenger completes the trip with another cabin, a restart applies new settings.
+
+## Web interface
+
+`Elevator.exe --web` starts the simulation and a small web server (based on
+[cpp-httplib](https://github.com/yhirose/cpp-httplib), a single header in `third_party/`). Open the printed address
+in a browser. The page shows the cross-section of the building with its sky following the simulated hour; the
+cabins move, open their doors, and the people waiting on each floor change colour while they wait (green, then amber
+after 20 s, then red after 45 s).
+
+What you can do:
+
+| Action | How |
+| --- | --- |
+| Pause, resume | Round button or Space |
+| Advance one simulated minute and pause | `+1 min` or S |
+| Change speed (from real time to a whole day in 43 seconds) | Slider, presets, + and − keys |
+| Call a lift | Click a floor, then the floor to go to (Esc cancels). Your passengers have a dark ring and are followed in the feed. |
+| Put a cabin out of order, repair it | Click the cabin. It stops at the next floor, everybody gets out and is given back to the dispatcher; the passengers waiting for it are reassigned. |
+| Send a wave of people | Morning rush, lunch break, evening rush or random crowd: the direction of the trips follows the building type |
+| New run | Number of cabins and floors, capacity, trips per day, building type, start hour, length of a day, days, seed, cabin timing |
+| Report | The same final report of the console version, at any moment; it opens by itself when everybody has arrived |
+
+The *Dispatcher* panel shows the last assignment decision with the cost of every cabin (the extra passenger time the
+call adds to its route), so you can see why a cabin has been chosen. *What happened* lists the important events
+(faults, waves, your own passengers); tick *every passenger* to see all of them.
+
+The interface uses a small JSON API, handy for scripts too:
+
+| Request | Meaning |
+| --- | --- |
+| `GET /api/state?since=N` | Clock, cabins (floor, doors, current floor transition, passengers, stops), waiting passengers, statistics and the events after sequence `N` |
+| `GET /api/config` | Current settings and the daily traffic profile |
+| `GET /api/report` | Final report as text lines |
+| `POST /api/control` | `action=pause`, `resume`, `step` (`ms=...`) or `speed` (`value=` simulated seconds per real second) |
+| `POST /api/call` | `from=F&to=T` |
+| `POST /api/wave` | `kind=morning\|lunch\|evening\|random&count=N` |
+| `POST /api/elevator` | `id=A&outOfOrder=true\|false` |
+| `POST /api/restart` | New run; the parameters have the names of `config.json` (`numberOfElevators`, `numberOfFloors`, `dayDurationSeconds`, ...) |
+
+In web mode the log goes to its file only, from `Warning` up, because hours of simulated traffic at high speed would
+produce a very large file.
+
+## Simulated day
+
+The whole building runs on a simulated clock (`SimulationClock`): a day lasts 24 simulated hours and every duration of
+the model (floor travel, doors, boarding, delays between calls) is expressed in that same time, so the proportions of
+a real day are kept at any speed. `dayDurationSeconds` only says how long a day lasts on the wall clock (`1440` = 24
+minutes, i.e. 60 times faster than real time); the speed can be changed while the simulation runs, and the clock can
+be paused or advanced by a step. Every thread waits through the clock, so pausing freezes the whole building.
+
+At high speed the operating system timers wake the threads a little late; consecutive waits of the same thread are
+chained on the simulated time line, so these delays do not accumulate (a test checks the drift at 2000x).
+
+The run starts at `dayStartHour` of day 1 and the generator stops at midnight of the last day; the run ends when the
+last passenger has arrived. The intensity of the calls follows the daily profile of the original project (morning,
+lunch and evening peaks over a base traffic); arrivals are random around that intensity (a Poisson process). With
+`trafficPattern` the peaks also have a direction:
+
+| Pattern | Morning peak | Lunch | Evening peak | Rest of the day |
+| --- | --- | --- | --- | --- |
+| `Office` (default) | from the lobby (floor 0) up | to and from the lobby | down to the lobby | random trips |
+| `Residential` | down to the lobby | to and from the lobby | from the lobby up | random trips |
+| `Uniform` | random trips (the original behaviour) | | | |
 
 ## Configuration
 
@@ -53,20 +148,21 @@ out of range, unknown enum names) stop the program at startup with an explanator
 | Setting | What it changes | How to choose a value |
 | --- | --- | --- |
 | `building.numberOfElevators` | How many elevators are available in the building. | Use `1` or more. Higher values make the system handle calls more easily. |
-| `building.numberOfFloors` | How many floors the building has. | Use at least `2`. The first floor is `0`, so `5` means floors from `0` to `4`. |
+| `building.numberOfFloors` | How many floors the building has. | From `2` to `60`. The first floor is `0`, so `5` means floors from `0` to `4`. |
 | `callsGenerator.type` | How passenger calls are created. | Use `Random` for automatic random calls, or `Fixed` to replay a predefined set of calls. |
 | `callsGenerator.numberOfCalls` | How many random calls are generated before the generator stops. | Used only with `Random`. Use values like `5`, `20` or `100`; use `4294967295` only when you want calls to continue until the program is stopped. |
-| `callsGenerator.averageCallsPerDay` | Average number of calls generated in one simulated day: it sets the base rate of the daily traffic profile. | Used only with `Random`. Default `600`. The resulting delay between two calls is always kept between `minDelayBetweenCallsMs` and `maxDelayBetweenCallsMs`. |
+| `callsGenerator.averageCallsPerDay` | Average number of calls generated in one simulated day (24 hours): it sets the base rate of the daily traffic profile. | Used only with `Random`. The shipped configuration uses `2000` (a 10-floor office). The resulting delay between two calls is always kept between `minDelayBetweenCallsMs` and `maxDelayBetweenCallsMs`. |
 | `callsGenerator.maxConcurrentCalls` | Maximum number of active calls/passengers in the simulated building. | Use a finite population-like limit such as `600`. When the limit is reached, the generator pauses until passengers complete their trips. |
-| `callsGenerator.numberOfSimulationDays` | How many simulated days the random generator should run. | Use `1` or more. The generator stops when either this limit or `numberOfCalls` is reached. |
-| `callsGenerator.simulationDayDurationMs` | Duration of one simulated 24-hour traffic cycle. | The random generator repeats a daily profile with peaks in the morning, around lunch and around dinner. `120000` means a full day lasts 2 real minutes. |
-| `callsGenerator.minDelayBetweenCallsMs` | The shortest wait between two generated calls. | Time is expressed in milliseconds: `1000` means 1 second. This value must not be higher than `maxDelayBetweenCallsMs`. |
-| `callsGenerator.maxDelayBetweenCallsMs` | The longest wait between two generated calls. | Time is expressed in milliseconds. Increase it for a calmer simulation, decrease it for busier traffic. |
+| `callsGenerator.numberOfSimulationDays` | How many simulated days the random generator should run. | Use `1` or more. The generator stops at midnight of the last day, or earlier if `numberOfCalls` is reached. |
+| `callsGenerator.trafficPattern` | Who travels when (see [Simulated day](#simulated-day)). | `Office` (default), `Residential` or `Uniform` (random trips, as in the original project). |
+| `callsGenerator.minDelayBetweenCallsMs` | The shortest wait between two generated calls, in simulated time. | Default `500`. This value must not be higher than `maxDelayBetweenCallsMs`. |
+| `callsGenerator.maxDelayBetweenCallsMs` | The longest wait between two generated calls, in simulated time. | Default `900000` (15 minutes): at night the building is quiet but not dead. |
 | `elevator.timeToReachTheNextFloorMs` | How long an elevator takes to move from one floor to the next. | Time is expressed in milliseconds. Use a value greater than `0`; higher values make elevators slower. |
 | `elevator.enterAndExitTimeMs` | How long doors stay open while people enter and exit. | Time is expressed in milliseconds. Higher values make every stop last longer. |
 | `elevator.doorTransitionTimeMs` | How long the doors take to open, and to close (each transition). | Time is expressed in milliseconds. Default `1000`. Every stop costs one opening and one closing, so with fast floors this value dominates the trip time. It is used both by the cabins and by the dispatcher prediction. |
 | `elevator.maxPeople` | Maximum number of people allowed in a cabin. | The dispatcher simulates the route of every cabin and never assigns a call that would make more than `maxPeople` people ride together. Passengers whose rides do not overlap do not count against each other. |
-| `simulation.timeScale` | Speed of the simulation compared to real time. | Default `1` (real time). `10` runs ten times faster. All durations in this file stay expressed in simulated time and the report is in simulated time, so results are comparable between speeds; very high values (above ~20 with short timings) lose precision because of the operating system timers. |
+| `simulation.dayDurationSeconds` | How long a simulated day (24 hours) lasts on the wall clock, in seconds: it sets the initial speed. | Default `1440` (24 minutes, 60 times faster than real time); `86400` is real time, the minimum `43.2` is a day in 43 seconds (2000x). All the other durations stay expressed in simulated time and the report is in simulated time, so results are comparable between speeds. Replaces `simulationDayDurationMs` and `timeScale` of the original project, which are now refused with an explanation. |
+| `simulation.dayStartHour` | Hour of day 1 at which the simulation starts. | Default `6` (06:00), so that a run does not begin with a night. Decimals allowed (`7.5` = 07:30). |
 | `callsGenerator.randomSeed` | Seed of the random calls generator. | `0` (default) picks a different seed at every run. Use a fixed value to get the same sequence of floors and delays. The seed used is written to the log. The threads timing is not deterministic, so results of two runs are close but not identical. |
 | `simulation.autoStop` | Stops the program when the simulation is over. | `true` (default): when all calls have been generated and served the final report is printed and the program exits. `false`: the program runs until `Enter` is pressed. |
 | `log.traceLevel` | How much detail is printed in the log. | Use `Debug` for the most detail, then `Verbose`, `Info`, `Warning`, or `Error` for progressively quieter output. |
@@ -149,7 +245,7 @@ The first table summarizes passenger flow:
 | `Wait p50` / `Wait p95` / `Wait p99` | Median, 95th and 99th percentile of the waiting time: how long *most* passengers wait and how bad the tail is. |
 | `Average journey` / `Max journey` | Time from the call to the arrival at the destination (wait + ride). |
 
-All times are simulated times (see `simulation.timeScale`).
+All times are simulated times (see [Simulated day](#simulated-day)).
 
 The anomaly table highlights situations worth investigating:
 
@@ -215,5 +311,4 @@ The report also includes a cabin sizing recommendation:
 
 Possible future improvements:
 - Idle cabins parking (e.g. spread the empty cabins, send them to the lobby before the morning peak)
-- Integration tests of whole simulation runs
-- GUI
+- Game layer on top of the web interface: goals, scores, budgets, comparison of dispatching strategies
