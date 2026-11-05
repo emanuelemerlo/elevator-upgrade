@@ -61,6 +61,23 @@ namespace AssignmentOptimizer
     }
   }
 
+  double TravelMs(const CabinState& cabin, const Floors::FloorNumber from, const Floors::FloorNumber to, const Timing& timing)
+  {
+    const auto* served = cabin.servedFloors;
+    if (served == nullptr || served->empty() || timing.expressFloorMs <= 0.0)
+      return Distance(from, to) * timing.floorMs;
+
+    // Each step costs the time of the floor it reaches: a normal floor if the cabin serves it, an express one otherwise.
+    double total = 0.0;
+    for (auto floor = from; floor != to;)
+    {
+      floor = to > floor ? floor + 1U : floor - 1U;
+      const auto isServed = floor < served->size() && (*served)[floor];
+      total += isServed ? timing.floorMs : timing.expressFloorMs;
+    }
+    return total;
+  }
+
   RouteResult SimulateRoute(
     const CabinState& cabin,
     const std::vector<Passenger>& committed,
@@ -168,7 +185,7 @@ namespace AssignmentOptimizer
           doorsOpen = false;
         }
 
-        now += Distance(floor, next) * timing.floorMs;
+        now += TravelMs(cabin, floor, next, timing);
         floor = next;
       }
 

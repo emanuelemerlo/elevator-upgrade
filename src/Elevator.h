@@ -122,6 +122,9 @@ public:
   // Floor where the cabin waits when it has nothing to do (InvalidFloor: it stays where it stopped).
   // Setting it wakes an idle cabin up, so that it goes there at once.
   void SetHomeFloor(Floors::FloorNumber floor);
+
+  // Floors where the cabin can stop (empty = every floor). Immutable after construction: read without locks.
+  const std::vector<bool>& GetServedFloors() const { return m_servedFloors; }
   bool IsOutOfOrder() const { return m_outOfOrderRequested.load(); }
 
   void SetId(std::string id);

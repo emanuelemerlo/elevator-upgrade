@@ -54,6 +54,7 @@ namespace
   {
     AssignmentOptimizer::Timing timing;
     timing.floorMs = static_cast<double>(Configuration::Elevator::TimeToReachTheNextFloor().count());
+    timing.expressFloorMs = static_cast<double>(Configuration::Elevator::TimeToPassAnExpressFloor().count());
     timing.doorMs = static_cast<double>(Configuration::Elevator::DoorTransitionTime().count());
     timing.dwellMs = static_cast<double>(Configuration::Elevator::EnterAndExitTime().count());
     return timing;
@@ -644,7 +645,8 @@ bool Management::AssignCallInternal(const std::shared_ptr<Call>& call, bool enqu
 
     if (states[index].status != ElevatorStatus::OutOfOrder && !candidate.otherGroup)
     {
-      const AssignmentOptimizer::CabinState cabin{ states[index].floor, states[index].direction, states[index].doorsOpen, states[index].targetFloor };
+      const AssignmentOptimizer::CabinState cabin{ states[index].floor, states[index].direction, states[index].doorsOpen,
+        states[index].targetFloor, &m_elevators[index]->GetServedFloors() };
       candidate.evaluation = AssignmentOptimizer::EvaluateAssignment(cabin, committed[index], newPassenger, capacity, timing, weights);
       candidate.wear = WearScore(*candidate.elevator);
     }

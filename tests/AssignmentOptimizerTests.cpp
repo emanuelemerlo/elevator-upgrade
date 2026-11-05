@@ -180,6 +180,35 @@ namespace
   }
 }
 
+namespace
+{
+  void ExpressRuns()
+  {
+    std::cout << "Express runs (zoned buildings)" << std::endl;
+
+    // A high zone cabin: it serves the lobby and floors 6-9, passes 1-5 express.
+    const std::vector<bool> highZone{ true, false, false, false, false, false, true, true, true, true };
+    const Timing timing{ 200.0, 1000.0, 20.0, 50.0 };
+
+    const CabinState atLobby{ 0U, Direction::None, false, Floors::InvalidFloor, &highZone };
+    Check(Near(TravelMs(atLobby, 0U, 8U, timing), 5 * 50.0 + 3 * 200.0), "lobby to floor 8: 5 express floors, then 3 normal ones");
+    Check(Near(TravelMs(atLobby, 8U, 0U, timing), 2 * 200.0 + 5 * 50.0 + 200.0), "the same time downwards: floors 7 and 6, 5 express, then the lobby");
+    Check(Near(TravelMs(atLobby, 9U, 6U, timing), 3 * 200.0), "inside the zone: normal floors");
+
+    const CabinState everyFloor{ 0U, Direction::None, false };
+    Check(Near(TravelMs(everyFloor, 0U, 8U, timing), 8 * 200.0), "without zones every floor takes the normal time");
+
+    // The pickup estimate of a call at the lobby for a cabin parked at floor 8 of the high zone.
+    const CabinState parkedHigh{ 8U, Direction::None, false, Floors::InvalidFloor, &highZone };
+    const Passenger toNine = Waiting(0, 9);
+    const auto route = SimulateRoute(parkedHigh, {}, &toNine, timing, kWeights);
+    Check(Near(route.extraPickupMs, 2 * 200.0 + 5 * 50.0 + 200.0 + 1000.0), "the pickup estimate uses the express floors (1850 ms)");
+
+    const auto legacy = SimulateRoute(CabinState{ 8U, Direction::None, false }, {}, &toNine, timing, kWeights);
+    Check(route.extraPickupMs < legacy.extraPickupMs, "and is shorter than counting every floor as a normal one");
+  }
+}
+
 int main()
 {
   {
@@ -197,6 +226,7 @@ int main()
   StopsOnTheWayToTheDecidedTarget();
   WaitingTimeWeighsMore();
   PickupOnlyStop();
+  ExpressRuns();
 
   std::cout << std::endl << (g_checks - g_failures) << "/" << g_checks << " checks passed" << std::endl;
   return g_failures == 0 ? 0 : 1;

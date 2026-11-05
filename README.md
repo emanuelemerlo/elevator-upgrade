@@ -258,8 +258,14 @@ Measured on the same scenarios (office, one day from 07:00, 2000x):
 Zones shorten waits and journeys, but in this model they cost energy: the cabins of the high zones travel the whole
 express section, mostly empty on the way down (no regenerative drive is modelled). At 60 floors the sky lobby gives
 the shortest waits but longer journeys than conventional zoning, because most trips need a change: its real
-advantage, fewer shafts and more floor area in very tall towers, is not part of the model. The dispatcher still
-predicts express floors at the normal floor time, so its estimates for long express runs are pessimistic.
+advantage, fewer shafts and more floor area in very tall towers, is not part of the model. The dispatcher
+predicts every route floor by floor, with the express time on the floors a cabin passes without stopping: its pickup
+estimates are within about half a second of the real waits in every group (before, it counted express floors as
+normal ones and was 4-7 s pessimistic for shuttles and high zones). Being exact did not make it better: on 60 floors
+with 3 zones the average wait went from 6.85 to 7.15 s and the journey from 36.3 to 36.1 s (three runs each). The
+dispatcher decides one call at a time, and the old pessimism probably worked as an accidental rule that kept the
+cabins of the high zones from being sent down to the lobby for a single passenger (not verified); a rule for the
+morning peak at the lobby would be the way to get that effect on purpose.
 
 ### The stairs
 

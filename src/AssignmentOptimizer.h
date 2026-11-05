@@ -35,6 +35,9 @@ namespace AssignmentOptimizer
     bool doorsOpen{ false };
     // Floor the cabin is already heading to (it does not re-evaluate its destination before arriving).
     Floors::FloorNumber targetFloor{ Floors::InvalidFloor };
+    // Floors where the cabin can stop (zoned buildings): it passes the others express, in Timing::expressFloorMs.
+    // nullptr or empty: every floor is served.
+    const std::vector<bool>* servedFloors{ nullptr };
   };
 
   // Durations in simulated milliseconds.
@@ -43,7 +46,11 @@ namespace AssignmentOptimizer
     double floorMs{ 0.0 };   // time to move by one floor
     double doorMs{ 0.0 };    // time of one door transition (opening or closing)
     double dwellMs{ 0.0 };   // time spent at a stop for people to enter and exit
+    double expressFloorMs{ 0.0 };   // time to pass a floor the cabin does not serve (0 = floorMs)
   };
+
+  /** \brief Travel time from one floor to another, floor by floor, as the cabin moves (see Elevator::TimeToReach). */
+  double TravelMs(const CabinState& cabin, Floors::FloorNumber from, Floors::FloorNumber to, const Timing& timing);
 
   struct Weights
   {
