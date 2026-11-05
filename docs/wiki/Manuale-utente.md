@@ -129,7 +129,9 @@ stessi passeggeri.
 - **Tabella** con una riga per corsa: strategia, cabine ferme, cabine e zone, viaggi, attese, viaggio, serviti in
   fretta, scale, cambi, energia, energia per viaggio, piani percorsi, cicli delle porte. Il valore migliore di ogni
   colonna è verde.
-- *include hands-on runs* mostra anche le corse in cui sei intervenuto (in corsivo).
+- *include hands-on runs* mostra anche le corse in cui sei intervenuto (in corsivo; non vincono mai una colonna). Si
+  spunta da sola quando uno scenario ha solo corse hands-on, e quando lo sono i due edifici appena finiti; le corse
+  appena finite sono evidenziate.
 - **Watch** rifà quella variante dal vivo, a una velocità che si riesce a seguire.
 - **Export CSV** scarica tutto l'archivio, con ogni campo, per un foglio di calcolo.
 - **Clear all results** svuota l'archivio (chiede conferma).

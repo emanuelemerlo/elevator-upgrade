@@ -67,6 +67,7 @@ public:
   void SetPauseWhenFinished(bool pause) { m_pauseWhenFinished = pause; }
   // Identifier shared by the two runs of a twin run, written in the archive ("" for the other runs).
   void SetPairId(const std::string& pairId) { m_pairId = pairId; }
+  const std::string& PairId() const { return m_pairId; }
   unsigned int GeneratedCalls() const;
 
   // Scenario of the current run: the seed actually used (also when the configured one is 0) and its key.

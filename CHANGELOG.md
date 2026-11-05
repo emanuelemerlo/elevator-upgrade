@@ -14,6 +14,11 @@ per chi scarica il programma.
   the floors of their riders, pointing at a cabin shows its plan and pointing at a person shows the assigned cabin
   and the predicted pickup; your own calls get a line to the chosen cabin.
 
+### Fixed
+
+- The results of two buildings in which you intervened (calls, waves, faults) were hidden at the end of the day: the
+  table opened empty. The runs just finished are now always shown and highlighted.
+
 ## [1.0.0] - 2026-11-05
 
 First release of **elevator-upgrade**, the evolution of [elevator](https://github.com/emanuelemerlo/elevator): the

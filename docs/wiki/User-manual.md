@@ -122,7 +122,9 @@ compared.
 - **Charts** of the main metrics, best first, in green.
 - **Table** with one row per run: strategy, idle cabins, cabins and zones, trips, waits, journey, served quickly, stairs,
   changes, energy, energy per trip, floors travelled, door cycles. The best value of every column is green.
-- *include hands-on runs* also shows the runs where you intervened (in italics).
+- *include hands-on runs* also shows the runs where you intervened (in italics; they never win a column). It ticks
+  itself when a scenario has only hands-on runs, and when the two buildings you just watched are hands-on; the runs just
+  finished are highlighted.
 - **Watch** runs that variant again live, at a speed you can follow.
 - **Export CSV** downloads the whole archive, every field, for a spreadsheet.
 - **Clear all results** empties the archive (it asks first).

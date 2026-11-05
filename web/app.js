@@ -467,7 +467,7 @@ function handleEvent(event) {
   if (event.type === 'arrive' && event.data.happy) addCheer(event.data, event.b || '');
   if (event.type === 'batchDone' && !event.data.cancelled) openRuns(lastBatchScenario);
   if (event.type === 'batch') lastBatchScenario = null;
-  if (event.type === 'twinFinished') openRuns(state ? state.run.scenario : null);
+  if (event.type === 'twinFinished') openRuns(state ? state.run.scenario : null, event.data.pair || '');
   if (event.type === 'start' && !event.b) {
     stairsReported = 0;
     walkers.length = 0;
@@ -2032,7 +2032,11 @@ function runName(run) {
   return `${run.strategy}, ${run.parking}, ${layout}`;
 }
 
-async function openRuns(scenario) {
+// The runs to point out in the results: the two buildings just finished, or the last comparison.
+let highlightPair = '';
+
+async function openRuns(scenario, pair = '') {
+  highlightPair = pair;
   try {
     const response = await fetch('/api/runs', { cache: 'no-store' });
     archive = (await response.json()).runs;
@@ -2057,8 +2061,18 @@ async function openRuns(scenario) {
   const wanted = scenario || (state && scenarios.some((item) => item.scenario === state.run.scenario) ? state.run.scenario : null);
   if (wanted) ui.scenarioFilter.value = wanted;
 
+  // The runs just finished are always shown, also when you intervened in them.
+  if (pair && archive.some((run) => run.pair === pair && !run.clean)) ui.showHandsOn.checked = true;
+  showHandsOnIfOnlyThose();
   renderRuns();
   if (!ui.runsDialog.open) ui.runsDialog.showModal();
+}
+
+// A scenario with only hands-on runs would show an empty table: show them instead.
+function showHandsOnIfOnlyThose() {
+  const scenario = ui.scenarioFilter.value;
+  const runs = archive.filter((run) => run.scenario === scenario);
+  if (runs.length && !runs.some((run) => run.clean)) ui.showHandsOn.checked = true;
 }
 
 function renderRuns() {
@@ -2070,7 +2084,10 @@ function renderRuns() {
     ui.scenarioNote.textContent = 'No results yet: a run is saved when its last passenger arrives. Start a comparison to fill this table quickly.';
   } else {
     ui.scenarioNote.textContent = `${rows.length} ${rows.length === 1 ? 'run' : 'runs'} with exactly the same passengers` +
-      (handsOnHidden && !ui.showHandsOn.checked ? `, ${handsOnHidden} hands-on ${handsOnHidden === 1 ? 'run' : 'runs'} hidden.` : '.');
+      (handsOnHidden && !ui.showHandsOn.checked
+        ? `, ${handsOnHidden} hands-on ${handsOnHidden === 1 ? 'run' : 'runs'} hidden (tick "include hands-on runs" to see ${handsOnHidden === 1 ? 'it' : 'them'}).`
+        : '.') +
+      (rows.some((run) => !run.clean) ? ' Hands-on runs are in italics and never win a column: your calls, waves and faults changed their passengers.' : '');
   }
 
   // Best value of every metric among the rows shown.
@@ -2094,7 +2111,8 @@ function renderRuns() {
 
   const body = rows.map((run) => {
     const tr = document.createElement('tr');
-    if (!run.clean) tr.className = 'hands-on';
+    if (!run.clean) tr.classList.add('hands-on');
+    if (highlightPair && run.pair === highlightPair) tr.classList.add('latest');
     for (const column of COLUMNS) {
       const td = document.createElement('td');
       const value = run[column.key];
@@ -2210,7 +2228,10 @@ function exportCsv() {
 }
 
 $('runsButton').addEventListener('click', () => openRuns(null));
-ui.scenarioFilter.addEventListener('change', renderRuns);
+ui.scenarioFilter.addEventListener('change', () => {
+  showHandsOnIfOnlyThose();
+  renderRuns();
+});
 ui.showHandsOn.addEventListener('change', renderRuns);
 $('runsExport').addEventListener('click', exportCsv);
 $('runsClear').addEventListener('click', async () => {

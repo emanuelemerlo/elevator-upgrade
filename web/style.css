@@ -463,6 +463,8 @@ table.runs th { position: sticky; top: 0; background: var(--steel-50); font-weig
 table.runs td.text, table.runs th.text { text-align: left; }
 table.runs td.best { color: var(--go); font-weight: 600; }
 table.runs tr.hands-on td { color: var(--ink-soft); font-style: italic; }
+table.runs tr.latest td { background: color-mix(in srgb, var(--lamp) 16%, transparent); }
+table.runs tr.latest td:first-child { box-shadow: inset 3px 0 0 var(--lamp); }
 table.runs td button { padding: 0.1rem 0.5rem; font-size: 0.78rem; }
 
 .numbers dd.small-number { font-size: 1.2rem; }

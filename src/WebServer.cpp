@@ -419,7 +419,7 @@ void WebServer::Implementation::PauseWhenFinished()
   {
     twinPaused = true;
     SimulationClock::Pause();
-    EventBus::Publish("twinFinished", Json::Writer::Object());
+    EventBus::Publish("twinFinished", Json::Writer::Object().Add("pair", simulation.PairId()));
   }
 }
 
