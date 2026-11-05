@@ -75,10 +75,25 @@ private:
   void RequestPendingRetry();
   void SendImpatientToTheStairs();
 
+  // Peak parking: recent assignments of every group, and the detection of a rush from its lobby.
+  void RecordPeakTraffic(int group, const std::shared_ptr<Call>& call);
+  void UpdatePeaks();
+
 private:
   std::vector<std::unique_ptr<Elevator>> m_elevators;
   std::vector<ElevatorGroup> m_groups;
   std::vector<int> m_elevatorGroup;
+
+  struct PeakTraffic
+  {
+    // Simulated time of every assignment of the group, and its kind: +1 up from the lobby, -1 down to the lobby, 0 other.
+    std::deque<std::pair<long long, int>> recent;
+    bool active{ false };
+  };
+
+  std::mutex m_peakMutex;
+  std::vector<PeakTraffic> m_peaks;   // one per group
+  long long m_lastPeakUpdateMs{ -1 };
   std::mutex m_assignMutex;
   bool m_shutdownCompleted{ false };
 

@@ -304,6 +304,13 @@ function describe(event) {
       };
     case 'evacuate':
       return mine ? { text: `#${d.id} had to leave cabin ${d.elevator} at floor ${d.floor}.`, cls: 'fault' } : null;
+    case 'peak': {
+      const where = d.lobby === 0 ? 'the lobby' : `the sky lobby at floor ${d.lobby}`;
+      const who = d.group ? ` of group ${d.group}` : '';
+      return d.active
+        ? { text: `Rush at ${where}: the idle cabins${who} wait there.`, cls: 'good' }
+        : { text: `The rush at ${where} is over: the idle cabins${who} stay where they stop.` };
+    }
     case 'repair':
       return { text: `Cabin ${d.elevator} is back in service.`, cls: 'good' };
     case 'wave':
@@ -320,7 +327,7 @@ function describe(event) {
       };
     case 'stairs':
       return mine || all || stairsInFeed()
-        ? { text: `#${d.id} gave up after ${seconds(d.waitMs)} at floor ${d.floor} and took the stairs.`, cls: mine ? 'mine' : '' }
+        ? { text: `🤬 #${d.id} gave up after ${seconds(d.waitMs)} at floor ${d.floor} and took the stairs.`, cls: mine ? 'mine' : '' }
         : null;
     case 'transfer':
       if (!mine && !all) return null;
@@ -521,7 +528,12 @@ function updatePanel() {
   updateTwinTable();
 
   const run = state.run;
-  const parking = { Stay: 'idle cabins stay where they stop', Lobby: 'idle cabins go back to the lobby', Spread: 'idle cabins spread along the building' };
+  const parking = {
+    Stay: 'idle cabins stay where they stop',
+    Lobby: 'idle cabins go back to the lobby',
+    Spread: 'idle cabins spread along the building',
+    Peak: 'idle cabins go back to the lobby at rush hours',
+  };
   ui.runInfo.innerHTML = '';
   if (state.twin) {
     ui.runInfo.append(`Same passengers in both buildings: scenario ${run.scenario} (seed ${run.seed}). Green is the better side. `);
@@ -556,7 +568,7 @@ const TWIN_ROWS = [
   { title: '95% wait less', value: (b) => (b.stats.boarded ? b.stats.p95WaitMs : null), format: shortDuration },
   { title: 'Longest wait', value: (b) => (b.stats.boarded ? b.stats.maxWaitMs : null), format: shortDuration },
   { title: 'Average journey', value: (b) => (b.stats.completed ? b.stats.avgJourneyMs : null), format: shortDuration },
-  { title: 'Took the stairs', value: (b) => b.stats.stairs, format: String },
+  { title: '🤬 Took the stairs', value: (b) => b.stats.stairs, format: String },
   { title: 'Changes of cabin', value: (b) => b.stats.transfers, format: String },
   { title: 'Energy', value: (b) => b.stats.energyWh, format: (v) => `${(v / 1000).toFixed(v < 10000 ? 2 : 1)} kWh` },
   { title: 'Energy per trip', value: (b) => (b.stats.completed ? b.stats.whPerTrip : null), format: (v) => `${v.toFixed(1)} Wh` },
@@ -873,7 +885,7 @@ function layoutLabel(building) {
 }
 
 function variantLabel(data) {
-  const parking = { Stay: 'cabins stay', Lobby: 'back to lobby', Spread: 'spread' }[data.run.parking] || data.run.parking;
+  const parking = { Stay: 'cabins stay', Lobby: 'back to lobby', Spread: 'spread', Peak: 'lobby at rush' }[data.run.parking] || data.run.parking;
   return `${data.run.strategy}, ${parking}, ${layoutLabel(data.building)} of ${data.building.maxPeople}`;
 }
 
@@ -1212,9 +1224,15 @@ function drawWalkers(ctx, g, building) {
     const bob = Math.abs(Math.sin(progress * Math.PI * 9)) * Math.max(1, size * 0.08);
 
     // The walker fades through the door during the last tenth of the walk.
-    ctx.globalAlpha = progress < 0.9 ? 1 : (1 - progress) / 0.1;
-    drawPerson(ctx, x, floorTop(g, walker.floor) + g.floorHeight - 3 - bob, size, walker.color, walker.mine ? COLORS.ink : null);
+    const fade = progress < 0.9 ? 1 : (1 - progress) / 0.1;
+    const baseY = floorTop(g, walker.floor) + g.floorHeight - 3;
+    ctx.globalAlpha = fade;
+    drawPerson(ctx, x, baseY - bob, size, walker.color, walker.mine ? COLORS.ink : null);
     ctx.globalAlpha = 1;
+
+    // An angry face over his head, the counterpart of the thumbs up of the passengers served quickly.
+    drawEmoji(ctx, '🤬', x, baseY - size - 2 - bob - Math.min(1, progress / 0.2) * Math.max(4, g.floorHeight * 0.2),
+      Math.max(13, size * 0.85), fade);
   }
 }
 
@@ -1234,13 +1252,13 @@ function addCheer(data, building) {
   cheers.push({ building, elevator: data.elevator, floor: data.floor, start: now, mine: myCalls.has(data.id) });
 }
 
-function drawThumb(ctx, x, y, size, alpha) {
+function drawEmoji(ctx, emoji, x, y, size, alpha) {
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.font = `${Math.round(size)}px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'bottom';
-  ctx.fillText('👍', x, y);
+  ctx.fillText(emoji, x, y);
   ctx.restore();
 }
 
@@ -1286,7 +1304,7 @@ function drawCheers(ctx, g, building) {
 
     // The thumb rises over the passenger, also when the floors are small.
     const thumbSize = Math.max(13, size * 0.9);
-    drawThumb(ctx, x, baseY - size - 2 - progress * Math.max(14, g.floorHeight * 0.8), thumbSize, fade);
+    drawEmoji(ctx, '👍', x, baseY - size - 2 - progress * Math.max(14, g.floorHeight * 0.8), thumbSize, fade);
   }
 }
 
@@ -1690,7 +1708,7 @@ const COLUMNS = [
   { key: 'maxWaitMs', title: 'Max wait', format: (v) => seconds(v), lower: true },
   { key: 'avgJourneyMs', title: 'Avg journey', format: (v) => seconds(v), lower: true },
   { key: 'happyPct', title: '👍 quick', format: (v) => (v === undefined ? '–' : `${Math.round(v)}%`), higher: true },
-  { key: 'stairs', title: 'Stairs', lower: true },
+  { key: 'stairs', title: '🤬 Stairs', lower: true },
   { key: 'transfers', title: 'Changes', format: (v) => (v === undefined ? '0' : String(v)) },
   { key: 'energyKWh', title: 'Energy', format: (v) => `${v.toFixed(2)} kWh`, lower: true },
   { key: 'whPerTrip', title: 'Wh/trip', format: (v) => v.toFixed(1), lower: true },
@@ -1704,7 +1722,7 @@ const CHARTS = [
   { key: 'p95WaitMs', title: '95% of the passengers wait less than', format: (v) => seconds(v) },
   { key: 'energyKWh', title: 'Energy for the whole run', format: (v) => `${v.toFixed(1)} kWh` },
   { key: 'happyPct', title: '👍 Served quickly', format: (v) => `${Math.round(v)}%`, higher: true },
-  { key: 'stairs', title: 'Took the stairs', format: (v) => String(v) },
+  { key: 'stairs', title: '🤬 Took the stairs', format: (v) => String(v) },
 ];
 
 function scenarioLabel(run) {

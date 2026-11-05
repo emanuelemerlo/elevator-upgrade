@@ -153,8 +153,10 @@ namespace
       return Configuration::Dispatch::Parking::Lobby;
     if (normalized == "spread")
       return Configuration::Dispatch::Parking::Spread;
+    if (normalized == "peak")
+      return Configuration::Dispatch::Parking::Peak;
 
-    throw std::invalid_argument("Invalid dispatch.idleParking value: " + value + " (Stay, Lobby or Spread)");
+    throw std::invalid_argument("Invalid dispatch.idleParking value: " + value + " (Stay, Lobby, Spread or Peak)");
   }
 
   ILog::LogType ParseLogType(const std::string& value)
@@ -491,6 +493,7 @@ const char* Configuration::Dispatch::ParkingName(const Parking parking)
   {
   case Parking::Lobby: return "Lobby";
   case Parking::Spread: return "Spread";
+  case Parking::Peak: return "Peak";
   case Parking::Stay:
   default: return "Stay";
   }

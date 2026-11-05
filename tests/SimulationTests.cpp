@@ -630,6 +630,59 @@ namespace
   }
 }
 
+namespace
+{
+  void PeakParking()
+  {
+    std::cout << "Idle cabins back to the lobby at rush hours" << std::endl;
+
+    auto settings = BaseSettings();
+    settings.numberOfFloors = 15;
+    settings.numberOfElevators = 4;
+    settings.dayStartHour = 7.0;
+    settings.numberOfSimulationDays = 1;
+    settings.averageCallsPerDay = 3000;
+    settings.idleParking = Configuration::Dispatch::Parking::Peak;
+    settings.randomSeed = 21;
+    Configuration::Apply(settings);
+
+    Simulation simulation;
+    simulation.Start();
+
+    // Start and end of the rushes, in the simulated hours of the day. The event stream keeps only the last events:
+    // they are collected while the day goes on.
+    std::vector<std::pair<double, bool>> rushes;
+    std::uint64_t sequence = EventBus::LastSequence();
+    const auto finished = WaitFor([&]()
+      {
+        for (const auto& event : EventBus::Since(sequence, 100000U))
+        {
+          sequence = event.sequence;
+          if (event.type == "peak")
+            rushes.emplace_back(7.0 + static_cast<double>(event.simulatedMs) / SimulationClock::HourMs,
+              event.data.find("\"active\":true") != std::string::npos);
+        }
+        simulation.CheckFinished();
+        return simulation.Archived();
+      }, std::chrono::seconds(60));
+    simulation.Stop();
+    Check(finished, "the office day ends");
+
+    Check(!rushes.empty() && rushes.front().second && rushes.front().first >= 7.0 && rushes.front().first <= 9.0,
+      "a rush at the lobby is detected in the morning" + (rushes.empty() ? std::string() : " (" + std::to_string(rushes.front().first) + " h)"));
+
+    bool ended = false;
+    for (const auto& rush : rushes)
+      ended = ended || (!rush.second && rush.first >= 8.0 && rush.first <= 11.5);
+    Check(ended, "and it ends after the morning peak");
+
+    bool eveningRush = false;
+    for (const auto& rush : rushes)
+      eveningRush = eveningRush || (rush.second && rush.first >= 17.0);
+    Check(!eveningRush, "the evening departures of an office are not a rush at the lobby");
+  }
+}
+
 int main()
 {
   Clock();
@@ -643,6 +696,7 @@ int main()
   Twin();
   Zones();
   ZonedRun();
+  PeakParking();
 
   LogBase::FlushPendingMessages();
 

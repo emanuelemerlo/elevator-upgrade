@@ -428,6 +428,8 @@ Management::Management(const unsigned int numberOfElevators)
 
   (void)numberOfElevators; // the cabins come from the groups (equal to the configured number without zones)
 
+  m_peaks.resize(m_groups.size());
+
   m_log.SetTraceId("Management");
 
   // Start pending calls worker
@@ -449,6 +451,14 @@ Management::Management(const unsigned int numberOfElevators)
 
       // Passengers who have waited longer than their patience give up and take the stairs.
       SendImpatientToTheStairs();
+
+      // Peak parking: start or end the rush of every lobby (without the pending lock: it wakes the cabins).
+      if (Configuration::Dispatch::IdleParking() == Configuration::Dispatch::Parking::Peak)
+      {
+        lock.unlock();
+        UpdatePeaks();
+        lock.lock();
+      }
 
       if (m_pendingCalls.empty() || !m_pendingThreadRunning)
         continue;
@@ -475,6 +485,97 @@ Management::Management(const unsigned int numberOfElevators)
         m_pendingCalls.erase(std::remove(m_pendingCalls.begin(), m_pendingCalls.end(), call), m_pendingCalls.end());
     }
   });
+}
+
+namespace
+{
+  // A rush from a lobby, over the assignments of the group in the last 10 simulated minutes: at least 5 went up from
+  // its lobby, at least 40% of all of them, and at least twice as many as the ones going down to the lobby. The last
+  // rule matters with zones: in a high zone every trip passes the lobby (also the changes of cabin), so the trips up
+  // from the lobby are always many; only a clear imbalance means a rush (offices in the morning, homes in the
+  // evening), not lunch or the ordinary traffic. The rush goes on while at least 2 go up, they are at least 25% of the
+  // assignments and not fewer than the ones going down.
+  constexpr long long PeakWindowMs = 10LL * 60LL * 1000LL;
+  constexpr long long PeakUpdatePeriodMs = 30LL * 1000LL;
+  constexpr std::size_t PeakStartCount = 5U;
+  constexpr double PeakStartShare = 0.4;
+  constexpr double PeakStartRatio = 2.0;
+  constexpr std::size_t PeakKeepCount = 2U;
+  constexpr double PeakKeepShare = 0.25;
+  constexpr double PeakKeepRatio = 1.0;
+}
+
+void Management::RecordPeakTraffic(const int group, const std::shared_ptr<Call>& call)
+{
+  if (Configuration::Dispatch::IdleParking() != Configuration::Dispatch::Parking::Peak || group < 0)
+    return;
+
+  const auto lobby = m_groups[static_cast<std::size_t>(group)].lobby;
+  int kind = 0;
+  if (call->GetStartFloor() == lobby && call->GetDestinationFloor() > lobby)
+    kind = 1;
+  else if (call->GetDestinationFloor() == lobby && call->GetStartFloor() > lobby)
+    kind = -1;
+
+  std::lock_guard<std::mutex> lock(m_peakMutex);
+  m_peaks[static_cast<std::size_t>(group)].recent.emplace_back(SimulationClock::Now(), kind);
+}
+
+void Management::UpdatePeaks()
+{
+  const auto now = SimulationClock::Now();
+
+  std::vector<std::pair<std::size_t, bool>> changes;
+  {
+    std::lock_guard<std::mutex> lock(m_peakMutex);
+
+    if (m_lastPeakUpdateMs >= 0 && now - m_lastPeakUpdateMs < PeakUpdatePeriodMs)
+      return;
+    m_lastPeakUpdateMs = now;
+
+    for (std::size_t group = 0U; group < m_peaks.size(); ++group)
+    {
+      auto& peak = m_peaks[group];
+      while (!peak.recent.empty() && now - peak.recent.front().first > PeakWindowMs)
+        peak.recent.pop_front();
+
+      const auto total = peak.recent.size();
+      const auto up = static_cast<std::size_t>(std::count_if(peak.recent.begin(), peak.recent.end(),
+        [](const std::pair<long long, int>& item) { return item.second > 0; }));
+      const auto down = static_cast<std::size_t>(std::count_if(peak.recent.begin(), peak.recent.end(),
+        [](const std::pair<long long, int>& item) { return item.second < 0; }));
+      const auto share = total == 0U ? 0.0 : static_cast<double>(up) / static_cast<double>(total);
+      const auto ratio = static_cast<double>(up) / static_cast<double>(std::max<std::size_t>(1U, down));
+
+      const auto active = peak.active
+        ? up >= PeakKeepCount && share >= PeakKeepShare && ratio >= PeakKeepRatio
+        : up >= PeakStartCount && share >= PeakStartShare && ratio >= PeakStartRatio;
+
+      if (active != peak.active)
+      {
+        peak.active = active;
+        changes.emplace_back(group, active);
+      }
+    }
+  }
+
+  for (const auto& change : changes)
+  {
+    const auto& group = m_groups[change.first];
+
+    // During the rush the idle cabins of the group wait at its lobby; afterwards they stay where they stop.
+    for (std::size_t index = 0U; index < m_elevators.size(); ++index)
+      if (m_elevatorGroup[index] == static_cast<int>(change.first))
+        m_elevators[index]->SetHomeFloor(change.second ? group.lobby : Floors::InvalidFloor);
+
+    m_log.Trace(std::string(change.second ? "Rush" : "End of the rush") + " at floor " + std::to_string(group.lobby) +
+      (group.name.empty() ? "" : " for group " + group.name), Log::TraceLevel::Info);
+
+    EventBus::Publish("peak", Json::Writer::Object()
+      .Add("group", group.name)
+      .Add("lobby", group.lobby)
+      .Add("active", change.second));
+  }
 }
 
 void Management::SendImpatientToTheStairs()
@@ -758,6 +859,7 @@ bool Management::AssignCallInternal(const std::shared_ptr<Call>& call, bool enqu
   if (callAssigned)
   {
     Statistics::RecordAssignedCall(best->elevator->GetId());
+    RecordPeakTraffic(leg.group, call);
 
     // The whole decision is published: the cost of every cabin shows why this one has been chosen.
     auto candidatesJson = Json::Writer::Array();

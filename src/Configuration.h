@@ -50,9 +50,11 @@ namespace Configuration
     /**
      * \brief Where an idle cabin waits for the next call.
      *        Stay: where it stopped. Lobby: it goes back to floor 0. Spread: every cabin has a home floor, evenly
-     *        spaced along the building.
+     *        spaced along the building. Peak: it goes back to the lobby of its group only while a rush from that lobby
+     *        is detected in the traffic (most calls start there going up: offices in the morning, homes in the
+     *        evening), and stays where it stopped otherwise.
      */
-    enum class Parking { Stay, Lobby, Spread };
+    enum class Parking { Stay, Lobby, Spread, Peak };
   }
 
   struct Settings

@@ -146,7 +146,26 @@ produce a very large file.
 
 All three respect the cabin capacity and skip the cabins out of order. `idleParking` decides where a cabin with
 nothing to do waits: `Stay` where it stopped, `Lobby` at floor 0, `Spread` at a home floor in the middle of an equal
-zone of the building (4 cabins in 20 floors wait at 2, 7, 12 and 17). A parked cabin answers a call from the floor it
+zone of the building (4 cabins in 20 floors wait at 2, 7, 12 and 17), `Peak` at the lobby of its group only during a
+rush from that lobby, where it stopped otherwise.
+
+`Peak` reads the traffic, it does not need hours: over the assignments of a group in the last 10 simulated minutes,
+a rush starts when at least 5 went up from its lobby, they are at least 40% of all of them and at least twice as many
+as the trips down to the lobby (offices in the morning, homes in the evening; lunch is balanced and is not a rush).
+It ends when the imbalance is gone. Each group has its own lobby (a sky lobby for the zones above it), and the start
+and the end of every rush appear in *What happened*. Measured on full days (office unless noted):
+
+| Building | Stay: wait / journey / energy per trip | Peak: wait / journey / energy per trip |
+| --- | --- | --- |
+| 20 floors, 6 cabins | 9.3 s / 29.6 s / 50 Wh | 8.0 s / 27.5 s / 60 Wh |
+| 20 floors, 6 cabins, homes | 9.5 s / 29.6 s / 51 Wh | 8.2 s / 27.7 s / 61 Wh |
+| 60 floors, 3 zones of 8 | 7.4 s / 35.0 s / 180 Wh | 6.8 s / 33.0 s / 223 Wh |
+| 60 floors, sky lobby at 30 | 6.4 s / 38.9 s / 161 Wh | 6.0 s / 36.8 s / 192 Wh |
+
+It shortens waits and journeys everywhere, for 20-25% more energy (the empty cabins going back to the lobby);
+`Lobby` all day costs more energy still and does worse than `Stay` outside the rush hours. A first version that only
+counted the trips up from the lobby stayed in rush all day in the high zones, where every trip passes the lobby: there
+it made things worse; the imbalance rule fixed it. A parked cabin answers a call from the floor it
 has reached, so parking costs travel and energy but can shorten the next wait.
 
 ### Scenarios
@@ -283,7 +302,7 @@ A cabin that was coming for somebody who left stops at an empty landing, as in r
 The other side of the stairs: a passenger who waited on the floors at most `happyWaitSeconds` in all (default 20 s,
 the time after which the waiting people turn from green to amber; with changes of cabin every wait counts) arrives
 happy. On screen he steps out of the cabin, jumps with his arms up and a 👍 rises over him (at high speed only some
-of them are drawn, the count is exact). The share of passengers served quickly is in the panel, in the twin table,
+of them are drawn, the count is exact), as a 🤬 rises over the ones walking to the stairs. The share of passengers served quickly is in the panel, in the twin table,
 in the report and in the results, where more is better. The threshold only evaluates the runs: it does not change
 the scenario.
 
@@ -348,7 +367,7 @@ out of range, unknown enum names) stop the program at startup with an explanator
 | `callsGenerator.stairsPatienceSeconds` | Average patience of a passenger before taking the stairs, simulated seconds. | Default `120`; every passenger gets between half and one and a half times this value. `0` = nobody ever gives up. |
 | `callsGenerator.happyWaitSeconds` | A passenger who waited at most this long in all arrives served quickly (👍). | Default `20`. Only an evaluation: it does not change the scenario. |
 | `dispatch.dispatchStrategy` | Which cabin answers a call (see [Comparing strategies](#comparing-strategies)). | `Optimized` (default), `Nearest` or `Collective`. |
-| `dispatch.idleParking` | Where an idle cabin waits. | `Stay` (default), `Lobby` or `Spread` (within the floors of its group). |
+| `dispatch.idleParking` | Where an idle cabin waits. | `Stay` (default), `Lobby`, `Spread` (within the floors of its group) or `Peak` (at the lobby during a rush detected in the traffic). |
 | `zoning.zones` | Zones of the building and their cabins (see [Zones and sky lobbies](#zones-and-sky-lobbies)). | Empty (default): one group of `numberOfElevators` cabins. E.g. `"1-20:6, 21-39:6"`; the cabins are then the ones of the zones. |
 | `zoning.skyLobbies` | Sky lobbies and the cabins of their shuttle from the ground floor. | Empty (default). E.g. `"30:4"`. |
 | `zoning.expressFloorFactor` | Time to pass a floor the cabin does not serve, as a share of `timeToReachTheNextFloorMs`. | Default `0.35`. |
@@ -510,5 +529,5 @@ The report also includes a cabin sizing recommendation:
 | `Capacity limit waits` | Number of times dispatch had to wait because all cabins were at the configured committed load. |
 
 Possible future improvements:
-- Parking that depends on the hour (e.g. back to the lobby only before the morning peak)
+- A dispatcher that keeps cabins in reserve at the lobby during a rush, not only the idle ones
 - More than two buildings side by side, or a comparison in series run as parallel buildings
