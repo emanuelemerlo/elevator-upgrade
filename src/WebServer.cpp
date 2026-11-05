@@ -572,7 +572,7 @@ void WebServer::Implementation::RegisterRoutes()
     Reply(response, Json::Writer::Object().Add("lines", lines));
   });
 
-  server.Post("/api/control", [this](const httplib::Request& request, httplib::Response& response)
+  server.Post("/api/control", [](const httplib::Request& request, httplib::Response& response)
   {
     const auto action = request.get_param_value("action");
 

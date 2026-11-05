@@ -21,6 +21,9 @@
 #include "Elevator.h"
 #include "Zoning.h"
 
+class Call;
+class Elevator;
+
 class Management final 
 {
 public:
@@ -35,10 +38,10 @@ public:
   Management& operator=(Management&&) = delete;
 
 public:
-  bool AssignCall(const class std::shared_ptr<class Call>& call);
+  bool AssignCall(const std::shared_ptr<Call>& call);
   // Internal assign used by pending worker. If enqueueIfCapacityLimited is true,
   // the call will be enqueued into the pending queue when all elevators are full.
-  bool AssignCallInternal(const class std::shared_ptr<class Call>& call, bool enqueueIfCapacityLimited);
+  bool AssignCallInternal(const std::shared_ptr<Call>& call, bool enqueueIfCapacityLimited);
 
   // Asks every cabin to stop without waiting (Shutdown() waits for them).
   void RequestShutdown();
@@ -68,12 +71,12 @@ public:
   std::vector<ElevatorSnapshot> GetElevatorSnapshots() const;
 
 private:
-  void EnqueuePendingCall(const std::shared_ptr<class Call>& call);
+  void EnqueuePendingCall(const std::shared_ptr<Call>& call);
   void RequestPendingRetry();
   void SendImpatientToTheStairs();
 
 private:
-  std::vector<std::unique_ptr<class Elevator>> m_elevators;
+  std::vector<std::unique_ptr<Elevator>> m_elevators;
   std::vector<ElevatorGroup> m_groups;
   std::vector<int> m_elevatorGroup;
   std::mutex m_assignMutex;
@@ -81,7 +84,7 @@ private:
 
   // Pending calls queue: when all elevators are full the call is enqueued here
   // and a background worker retries assignments without blocking caller threads.
-  std::deque<std::shared_ptr<class Call>> m_pendingCalls;
+  std::deque<std::shared_ptr<Call>> m_pendingCalls;
   mutable std::mutex m_pendingMutex;
   std::condition_variable m_pendingCond;
   std::unique_ptr<std::thread> m_pendingThread;

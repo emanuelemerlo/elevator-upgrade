@@ -292,9 +292,17 @@ void Simulation::Archive()
   const auto energy = m_management->GetEnergy();
   const auto delivered = statistics.completedPassengers;
 
+  // Local time of the end of the run. std::localtime is not thread safe (and refused by Visual Studio as unsafe):
+  // each platform has its own reentrant version.
   char finishedAt[32] = {};
   const auto now = std::time(nullptr);
-  std::strftime(finishedAt, sizeof(finishedAt), "%Y-%m-%d %H:%M", std::localtime(&now));
+  std::tm local{};
+#ifdef _WIN32
+  localtime_s(&local, &now);
+#else
+  localtime_r(&now, &local);
+#endif
+  std::strftime(finishedAt, sizeof(finishedAt), "%Y-%m-%d %H:%M", &local);
 
   const auto id = RunArchive::NewId("run-");
   const auto u64 = [](const std::uint64_t value) { return static_cast<unsigned long long>(value); };

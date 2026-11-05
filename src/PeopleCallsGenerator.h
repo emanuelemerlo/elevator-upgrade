@@ -15,6 +15,9 @@
 #include <memory>
 #include <vector>
 
+class Management;
+class BuildingContext;
+
 class PeopleCallsGenerator final 
 {
 private:
@@ -39,7 +42,7 @@ private:
   };
 
 public:
-  explicit PeopleCallsGenerator(class Management& management);
+  explicit PeopleCallsGenerator(Management& management);
   PeopleCallsGenerator() = delete;
 
   ~PeopleCallsGenerator();
@@ -64,12 +67,12 @@ public:
   std::size_t ScheduledCalls() const { return m_schedule.size(); }
 
 private:
-  class Management& m_management;
+  Management& m_management;
 
   Log m_log;
 
   std::atomic_bool m_finished{ false };
-  class BuildingContext* m_context{ nullptr };   // building the generator belongs to (its thread runs in it)
+  BuildingContext* m_context{ nullptr };   // building the generator belongs to (its thread runs in it)
   std::atomic_uint m_generatedCalls{ 0U };
   unsigned int m_seed{ 0U };
   std::vector<ScheduledCall> m_schedule;

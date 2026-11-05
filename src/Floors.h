@@ -11,6 +11,7 @@
 #include "Log.h"
 
 #include <vector>
+#include <memory>
 #include <mutex>
 
 enum class Direction
@@ -20,6 +21,11 @@ enum class Direction
   Down,
   Both,
 };
+
+// Declared here at global scope: the members below refer to them, and an implicit declaration inside the class
+// (e.g. "static class People& GetPeople()") confuses the Visual Studio IntelliSense.
+class Call;
+class People;
 
 typedef std::pair<bool, Direction> Stop;
 typedef std::vector<Stop> FloorStops;
@@ -45,10 +51,10 @@ public:
   Floors();
 
 public:
-  bool SetStop(const class std::shared_ptr<class Call>& call, bool destinationOnly = false);
+  bool SetStop(const std::shared_ptr<Call>& call, bool destinationOnly = false);
   // Flags only the pickup floor: the destination is flagged when the passenger boards, so that the
   // cabin never makes an empty stop at a destination floor before the passenger is on board.
-  bool SetPickupStop(const class std::shared_ptr<class Call>& call);
+  bool SetPickupStop(const std::shared_ptr<Call>& call);
   void ClearStop(const FloorNumber floor, const Direction direction);
   void ClearAllStops();
   FloorStops GetStops() const;
@@ -57,7 +63,7 @@ public:
   std::size_t CountStops() const;
   std::size_t CountStopsBetween(FloorNumber firstFloor, FloorNumber lastFloor) const;
 
-  static class People& GetPeople();
+  static People& GetPeople();
 
   void Trace(const FloorNumber currentFloor);
 
