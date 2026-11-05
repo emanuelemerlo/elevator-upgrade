@@ -1,15 +1,52 @@
 name: build
 
+# Every push and pull request is built and checked on the three platforms of the releases.
 on:
   push:
+    branches: ["**"]
+    tags-ignore: ["v*"]   # a version tag runs the release workflow instead
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  linux:
-    runs-on: ubuntu-latest
+  unix:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+          - name: macOS
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Build
-        run: make -j"$(nproc)"
+        run: make -j4
+
       - name: Tests
         run: make test
+
+      - name: Smoke test of the web interface
+        run: .github/scripts/smoke-test.sh . Elevator.exe
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build (Visual Studio, Release x64)
+        run: msbuild Elevator.sln /m /p:Configuration=Release /p:Platform=x64
+
+      - name: Smoke test of the web interface
+        shell: bash
+        run: |
+          cp x64/Release/Elevator.exe .
+          .github/scripts/smoke-test.sh . Elevator.exe

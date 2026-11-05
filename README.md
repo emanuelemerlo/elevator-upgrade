@@ -12,6 +12,21 @@ make
 ./Elevator.exe              # the original console simulation
 ```
 
+Ready-made packages for Windows, Linux and macOS are on the
+[releases page](https://github.com/emanuelemerlo/elevator-upgrade/releases): unpack and start `start-web`.
+
+### Releasing a version
+
+1. Add the section `## [1.1.0] - date` to `CHANGELOG.md`, written for the people who download the program: it becomes
+   the release notes (also attached as `RELEASE_NOTES.md` and included in every package).
+2. Push a tag (`git tag v1.1.0 && git push origin v1.1.0`), or start *Actions → release → Run workflow* with the
+   version.
+3. The `release` workflow builds and tests on Windows (Visual Studio, static runtime), Linux (Ubuntu 22.04, static
+   libstdc++) and macOS (universal binary), packages each platform with the web interface, `config.json`, the
+   licenses and a `start-web` launcher, starts every package and checks its web interface, then publishes the
+   release. A version with a suffix (`1.1.0-beta.1`) is published as a pre-release. Without its section in
+   `CHANGELOG.md` the workflow stops before building.
+
 The [wiki](https://github.com/emanuelemerlo/elevator-upgrade/wiki) (Italian and English) has the history of the
 project, a user manual and a developer guide. See also [Web interface](#web-interface), [Comparing strategies](#comparing-strategies), [Energy](#energy) and
 [Simulated day](#simulated-day) below; the rest of this file is the
@@ -60,6 +75,7 @@ Command line options:
 | `--host ADDRESS` | Address to listen on (default `127.0.0.1`; `0.0.0.0` lets other computers of the network connect). |
 | `--web-root DIR` | Folder with the files of the web interface (default `./web`, so start the program from the repository folder). |
 | `--config FILE` | Configuration file (default `config.json`). |
+| `--version` | Prints the version and exits. |
 
 ### Tests
 

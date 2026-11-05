@@ -143,3 +143,16 @@ g++ -std=c++17 -O1 -g -fsanitize=thread -pthread -Isrc \
 Le corse intere usano velocità alte; un test che dipende dai tempi aspetta con margini larghi. `traceLevel: "Debug"`
 scrive su cosa si basa ogni decisione del dispatcher (`Dispatch state of ...`), per confrontare la previsione con
 quello che la cabina fa davvero.
+
+## Rilasciare una versione
+
+1. Aggiungi `## [1.1.0] - data` a `CHANGELOG.md`, scritta per chi scarica il programma: diventa la nota della
+   release.
+2. Pubblica il tag `v1.1.0`, oppure avvia *Actions → release → Run workflow* indicando la versione.
+3. `.github/workflows/release.yml` controlla le note, compila e prova su Windows, Linux e macOS, prepara il pacchetto
+   di ogni piattaforma, avvia ciascun pacchetto e verifica l'interfaccia web (`.github/scripts/smoke-test.sh`), poi
+   pubblica la release con le note e l'elenco delle modifiche. `1.1.0-beta.1` diventa una pre-release.
+
+Ogni push viene anche compilato e provato sulle tre piattaforme da `.github/workflows/build.yml`. La versione di una
+compilazione sta in `src/Version.h` (`dev` nel repository): `Elevator --version` la stampa, l'interfaccia web la
+mostra.

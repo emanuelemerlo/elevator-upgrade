@@ -10,6 +10,14 @@
 - Nient'altro: l'unica libreria esterna, [cpp-httplib](https://github.com/yhirose/cpp-httplib), è un solo file di
   intestazione già incluso in `third_party/`.
 
+## Scaricare una versione pronta
+
+La [pagina delle release](https://github.com/emanuelemerlo/elevator-upgrade/releases) ha pacchetti pronti per Windows
+(x64), Linux (x64, glibc 2.35 o successiva) e macOS (Apple silicon e Intel). Estrai l'archivio e avvia
+`start-web.cmd` (Windows) o `./start-web.sh` (Linux, macOS): parte la simulazione e si apre il browser. Il programma
+non è firmato: su Windows SmartScreen può chiedere conferma (*Ulteriori informazioni → Esegui comunque*), su macOS la
+prima volta fai clic destro e scegli *Apri*. Per compilarlo da te, prosegui.
+
 ## Scaricare il codice
 
 ```sh
@@ -62,6 +70,7 @@ La console scrive l'indirizzo da aprire, di solito `http://127.0.0.1:8080/`. Pre
 | `--host INDIRIZZO` | Indirizzo su cui ascoltare (predefinito `127.0.0.1`, solo questo computer; `0.0.0.0` permette il collegamento da altri computer della rete). |
 | `--web-root CARTELLA` | Cartella con i file dell'interfaccia web (predefinita `./web`). |
 | `--config FILE` | File di configurazione (predefinito `config.json`). |
+| `--version` | Stampa la versione ed esce. |
 
 In modalità web il log va solo nel suo file, dal livello *Warning* in su.
 

@@ -1,0 +1,190 @@
+name: release
+
+# Publishes a version for Windows, Linux and macOS, with the notes of CHANGELOG.md.
+#
+# Two ways to start it:
+#   - push a version tag:  git tag v1.0.0 && git push origin v1.0.0
+#   - from GitHub: Actions -> release -> Run workflow, with the version (the tag is created on the chosen branch)
+#
+# Before releasing, add the section "## [1.0.0] - date" to CHANGELOG.md: the workflow stops if it is missing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 1.0.0 (without the v)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Version and notes
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="${INPUT_VERSION#v}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::'$version' is not a version like 1.0.0 or 1.1.0-beta.1"
+            exit 1
+          fi
+          case "$version" in *-*) prerelease=true ;; *) prerelease=false ;; esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version (prerelease: $prerelease)"
+
+      - name: Release notes from CHANGELOG.md
+        run: .github/scripts/release-notes.sh "${{ steps.version.outputs.version }}" > RELEASE_NOTES.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: RELEASE_NOTES.md
+
+  build:
+    name: ${{ matrix.name }}
+    needs: prepare
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            platform: windows-x64
+          - name: Linux x64
+            # The oldest supported runner: the binary then runs on every distribution with glibc 2.35 or later.
+            os: ubuntu-22.04
+            platform: linux-x64
+          - name: macOS universal
+            os: macos-latest
+            platform: macos-universal
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PACKAGE: elevator-upgrade-${{ needs.prepare.outputs.version }}-${{ matrix.platform }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+
+      - name: Version in the program
+        run: printf '#pragma once\n\n#define ELEVATOR_VERSION "%s"\n' "$VERSION" > src/Version.h
+
+      - name: Tests
+        if: runner.os != 'Windows'
+        run: make -j4 test && make clean
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        # libstdc++ and libgcc are linked statically: the binary only needs the C library of the system.
+        run: |
+          make -j4 CXXFLAGS="-O2 -pthread -Wall -std=c++17" LDLIBS="-static-libstdc++ -static-libgcc"
+          mv Elevator.exe Elevator
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        # One binary for Apple silicon and Intel Macs.
+        run: |
+          make -j4 CXXFLAGS="-O2 -pthread -Wall -std=c++17 -arch arm64 -arch x86_64 -mmacosx-version-min=11.0"
+          mv Elevator.exe Elevator
+          lipo -info Elevator
+
+      - uses: microsoft/setup-msbuild@v2
+        if: runner.os == 'Windows'
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        # The Release configuration links the C++ runtime statically: no redistributable to install.
+        shell: pwsh
+        run: |
+          msbuild Elevator.sln /m /p:Configuration=Release /p:Platform=x64
+          Copy-Item x64/Release/Elevator.exe Elevator.exe
+
+      - name: Package
+        run: |
+          program=Elevator
+          launcher=packaging/start-web.sh
+          if [ "$RUNNER_OS" = "Windows" ]; then program=Elevator.exe; launcher=packaging/start-web.cmd; fi
+
+          mkdir -p "dist/$PACKAGE"
+          cp "$program" "dist/$PACKAGE/"
+          cp -R web "dist/$PACKAGE/"
+          cp config.json README.md CHANGELOG.md RELEASE_NOTES.md LICENSE "$launcher" "dist/$PACKAGE/"
+          cp third_party/cpp-httplib/LICENSE "dist/$PACKAGE/LICENSE-cpp-httplib"
+
+          cd dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a -tzip "$PACKAGE.zip" "$PACKAGE" > /dev/null
+          else
+            tar -czf "$PACKAGE.tar.gz" "$PACKAGE"
+          fi
+          ls -l
+
+      - name: Smoke test of the package
+        run: |
+          program=Elevator
+          if [ "$RUNNER_OS" = "Windows" ]; then program=Elevator.exe; fi
+          .github/scripts/smoke-test.sh "dist/$PACKAGE" "$program" "$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.platform }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Files
+        run: ls -l artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.prepare.outputs.version }}
+          name: elevator-upgrade ${{ needs.prepare.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          body_path: artifacts/RELEASE_NOTES.md
+          # The list of the changes since the previous release is added below the notes.
+          generate_release_notes: true
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/*.zip
+            artifacts/*.tar.gz
+            artifacts/RELEASE_NOTES.md

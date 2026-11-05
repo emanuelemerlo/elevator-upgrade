@@ -15,6 +15,7 @@
 #include "RunArchive.h"
 #include "Scenario.h"
 #include "Zoning.h"
+#include "Version.h"
 #include "BuildingContext.h"
 
 // cpp-httplib is third party code: it is compiled without the warnings of the project (Visual Studio uses /W4 /WX).
@@ -552,6 +553,7 @@ void WebServer::Implementation::RegisterRoutes()
       curve.PushNumber(value, 3);
 
     Reply(response, Json::Writer::Object()
+      .Add("version", ELEVATOR_VERSION)
       .Add("settings", SettingsJson(simulation.UserSettings()))
       .Add("trafficCurve", curve)
       .Add("minSpeed", SimulationClock::MinSpeed, 1)

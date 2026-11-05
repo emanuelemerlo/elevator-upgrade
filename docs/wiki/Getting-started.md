@@ -10,6 +10,14 @@
 - Nothing else: the only external library, [cpp-httplib](https://github.com/yhirose/cpp-httplib), is a single header
   already included in `third_party/`.
 
+## Download a release
+
+The [releases page](https://github.com/emanuelemerlo/elevator-upgrade/releases) has ready-made packages for Windows
+(x64), Linux (x64, glibc 2.35 or later) and macOS (Apple silicon and Intel). Unpack the archive and start
+`start-web.cmd` (Windows) or `./start-web.sh` (Linux, macOS): the simulation starts and the browser opens. The
+program is not signed: on Windows SmartScreen may ask to confirm (*More info → Run anyway*), on macOS right-click it
+and choose *Open* the first time. To build it yourself, read on.
+
 ## Get the code
 
 ```sh
@@ -62,6 +70,7 @@ The console prints the address to open, by default `http://127.0.0.1:8080/`. Pre
 | `--host ADDRESS` | Address to listen on (default `127.0.0.1`, this computer only; `0.0.0.0` lets other computers of the network connect). |
 | `--web-root DIR` | Folder with the files of the web interface (default `./web`). |
 | `--config FILE` | Configuration file (default `config.json`). |
+| `--version` | Prints the version and exits. |
 
 In web mode the log goes to its file only, from the *Warning* level up.
 

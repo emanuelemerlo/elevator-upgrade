@@ -505,3 +505,5 @@ table.runs td button { padding: 0.1rem 0.5rem; font-size: 0.78rem; }
   resize: vertical;
 }
 .numbers dt small { display: block; font-size: 0.72rem; }
+
+.version { margin: 0; font-size: 0.75rem; color: var(--ink-soft); text-align: right; }

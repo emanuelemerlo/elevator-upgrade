@@ -4,6 +4,7 @@
 #include "SimulationClock.h"
 #include "WebServer.h"
 #include "RunArchive.h"
+#include "Version.h"
 #include "Log.h"
 #include "LogBase.h"
 #include "Statistics.h"
@@ -90,6 +91,7 @@ namespace
   struct CommandLine
   {
     bool web{ false };
+    bool version{ false };
     std::string host{ "127.0.0.1" };
     int port{ 8080 };
     std::string webRoot{ "web" };
@@ -99,13 +101,15 @@ namespace
   void PrintUsage()
   {
     std::cout <<
-      "Usage: Elevator.exe [--web] [--port N] [--host ADDRESS] [--web-root DIR] [--config FILE]\n"
+      "Elevator playground " ELEVATOR_VERSION "\n"
+      "Usage: Elevator.exe [--web] [--port N] [--host ADDRESS] [--web-root DIR] [--config FILE] [--version]\n"
       "  (no option)     console simulation with the symbolic dashboard, as in the original project\n"
       "  --web           runs the simulation behind a web interface: open the printed address in a browser\n"
       "  --port N        web interface port (default 8080)\n"
       "  --host ADDRESS  address to listen on (default 127.0.0.1, use 0.0.0.0 to allow other computers)\n"
       "  --web-root DIR  folder with the web interface files (default ./web)\n"
-      "  --config FILE   configuration file (default config.json)\n";
+      "  --config FILE   configuration file (default config.json)\n"
+      "  --version       prints the version and exits\n";
   }
 
   bool ParseCommandLine(const int argc, char* argv[], CommandLine& commandLine)
@@ -117,6 +121,8 @@ namespace
 
       if (argument == "--web")
         commandLine.web = true;
+      else if (argument == "--version")
+        commandLine.version = true;
       else if (argument == "--port" && hasValue)
         commandLine.port = std::stoi(argv[++index]);
       else if (argument == "--host" && hasValue)
@@ -179,7 +185,7 @@ namespace
     }
 
     const auto shownHost = commandLine.host == "0.0.0.0" ? "localhost" : commandLine.host;
-    std::cout << "Elevator playground running: open http://" << shownHost << ":" << commandLine.port << "/ in your browser" << std::endl;
+    std::cout << "Elevator playground " << ELEVATOR_VERSION << " running: open http://" << shownHost << ":" << commandLine.port << "/ in your browser" << std::endl;
     std::cout << "Press Enter to quit." << std::endl;
 
     // Without a console (stdin closed) the server keeps running until the process is terminated.
@@ -203,6 +209,12 @@ int main(int argc, char* argv[])
     {
       PrintUsage();
       return 2;
+    }
+
+    if (commandLine.version)
+    {
+      std::cout << "Elevator playground " << ELEVATOR_VERSION << std::endl;
+      return 0;
     }
 
     Configuration::LoadFromFile(commandLine.configPath);

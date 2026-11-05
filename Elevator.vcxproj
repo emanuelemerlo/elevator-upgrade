@@ -64,6 +64,7 @@
     <ClInclude Include="src\TrafficProfile.h" />
     <ClInclude Include="src\Watchdog.h" />
     <ClInclude Include="src\WebServer.h" />
+    <ClInclude Include="src\Version.h" />
     <ClInclude Include="src\WorkerThread.h" />
     <ClInclude Include="src\Zoning.h" />
     <ClInclude Include="third_party\cpp-httplib\httplib.h" />
@@ -148,6 +149,7 @@
       </PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile />
       <TreatWarningAsError>true</TreatWarningAsError>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

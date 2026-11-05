@@ -119,6 +119,7 @@ async function loadConfig() {
   const response = await fetch('/api/config', { cache: 'no-store' });
   config = await response.json();
   minSpeed = Math.max(1, config.minSpeed);
+  $('version').textContent = config.version ? `Elevator playground ${config.version}` : '';
   maxSpeed = config.maxSpeed;
   drawProfile();
 }

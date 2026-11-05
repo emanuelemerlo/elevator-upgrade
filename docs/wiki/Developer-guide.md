@@ -141,3 +141,15 @@ g++ -std=c++17 -O1 -g -fsanitize=thread -pthread -Isrc \
 The whole runs use high speeds; a test that depends on timing waits with generous timeouts. `traceLevel: "Debug"`
 writes what every dispatch decision was based on (`Dispatch state of ...`), to compare the prediction with what the
 cabin really does.
+
+## Releasing
+
+1. Add `## [1.1.0] - date` to `CHANGELOG.md`, written for the people who download the program: it becomes the
+   release notes.
+2. Push the tag `v1.1.0`, or start *Actions → release → Run workflow* with the version.
+3. `.github/workflows/release.yml` checks the notes, builds and tests on Windows, Linux and macOS, packages every
+   platform, starts each package and checks its web interface (`.github/scripts/smoke-test.sh`), then publishes the
+   release with the notes and the list of the changes. `1.1.0-beta.1` becomes a pre-release.
+
+Every push is also built and tested on the three platforms by `.github/workflows/build.yml`. The version of a build
+is in `src/Version.h` (`dev` in the repository): `Elevator --version` prints it, the web interface shows it.
