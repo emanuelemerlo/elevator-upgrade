@@ -12,7 +12,8 @@ make
 ./Elevator.exe              # the original console simulation
 ```
 
-See [Web interface](#web-interface), [Comparing strategies](#comparing-strategies), [Energy](#energy) and
+The [wiki](https://github.com/emanuelemerlo/elevator-upgrade/wiki) (Italian and English) has the history of the
+project, a user manual and a developer guide. See also [Web interface](#web-interface), [Comparing strategies](#comparing-strategies), [Energy](#energy) and
 [Simulated day](#simulated-day) below; the rest of this file is the
 documentation of the original project, updated where the fork changed something.
 
