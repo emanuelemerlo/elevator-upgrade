@@ -95,7 +95,7 @@ jobs:
       - name: Version in the program
         run: printf '#pragma once\n\n#define ELEVATOR_VERSION "%s"\n' "$VERSION" > src/Version.h
 
-      - name: Tests
+      - name: Tests (Linux, macOS)
         if: runner.os != 'Windows'
         run: make -j4 test && make clean
 
@@ -124,6 +124,14 @@ jobs:
         run: |
           msbuild Elevator.sln /m /p:Configuration=Release /p:Platform=x64
           Copy-Item x64/Release/Elevator.exe Elevator.exe
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
+      - name: Tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .github/scripts/windows-tests.ps1
 
       - name: Package
         run: |

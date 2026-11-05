@@ -45,6 +45,12 @@ jobs:
       - name: Build (Visual Studio, Release x64)
         run: msbuild Elevator.sln /m /p:Configuration=Release /p:Platform=x64
 
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Tests (Visual Studio)
+        shell: pwsh
+        run: .github/scripts/windows-tests.ps1
+
       - name: Smoke test of the web interface
         shell: bash
         run: |
