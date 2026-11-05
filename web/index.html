@@ -64,7 +64,7 @@
         <dl class="numbers" id="numbers">
           <div><dt>Waiting</dt><dd id="statWaiting">0</dd></div>
           <div><dt>Riding</dt><dd id="statRiding">0</dd></div>
-          <div><dt>Delivered</dt><dd id="statDelivered">0</dd></div>
+          <div><dt id="statDeliveredLabel">Delivered</dt><dd id="statDelivered">0</dd></div>
           <div><dt>Average wait</dt><dd id="statAvgWait">–</dd></div>
           <div><dt>95% wait less</dt><dd id="statP95Wait">–</dd></div>
           <div><dt>Longest wait</dt><dd id="statMaxWait">–</dd></div>
@@ -156,6 +156,7 @@
           </select>
         </label>
         <label>Patience before the stairs (s, 0 = never) <input type="number" name="stairsPatienceSeconds" min="0" max="86400" step="10"></label>
+        <label>Served quickly: waited at most (s) <input type="number" name="happyWaitSeconds" min="0" max="3600" step="5"></label>
       </div>
       <details>
         <summary>Cabin timing and energy</summary>

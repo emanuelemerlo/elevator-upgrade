@@ -151,6 +151,9 @@ namespace
     Check(statistics.completedPassengers + statistics.abandonedCalls == statistics.queuedCalls,
       "every passenger reached the destination, by lift or by the stairs");
     Check(statistics.requeuedCalls == 0U, "no boarding refused by a full cabin");
+    Check(statistics.happyPassengers > 0U && statistics.happyPassengers <= statistics.completedPassengers,
+      "some passengers are served quickly (" + std::to_string(statistics.happyPassengers) + " of " +
+      std::to_string(statistics.completedPassengers) + "), never more than the delivered ones");
     Check(Configuration::Simulation::Completed() || Configuration::Simulation::CurrentHour() >= 23.0,
       "the run lasts until the last passengers of the day, close to midnight");
   }

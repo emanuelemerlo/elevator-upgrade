@@ -40,6 +40,7 @@ struct StatisticsSnapshot
   std::uint64_t requeuedCalls{ 0U };
   std::uint64_t abandonedCalls{ 0U };      // passengers who gave up waiting and took the stairs
   std::uint64_t transfers{ 0U };           // changes of cabin at a lobby (zoned buildings)
+  std::uint64_t happyPassengers{ 0U };     // arrived after little waiting on the floors (see happyWaitSeconds)
   std::uint64_t transferBoardings{ 0U };   // boardings after a change of cabin...
   std::uint64_t totalTransferWaitMs{ 0U }; // ...and the time waited at the lobby for them        // calls sent back to the dispatcher (e.g. boarding refused by a full cabin)
   std::uint64_t totalAssignmentTimeUs{ 0U };
@@ -84,6 +85,7 @@ namespace Statistics
   void RecordRequeuedCall();
   void RecordAbandonedCall();
   void RecordTransfer();
+  void RecordHappyPassenger();
   void RecordTransferWait(std::chrono::milliseconds waitTime);
   // Cheap accessor (no copies) used on hot paths: calls created and not yet completed.
   std::uint64_t ActiveCalls();

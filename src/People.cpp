@@ -268,11 +268,20 @@ void People::Exit(const Floors::FloorNumber currentFloor, const std::string& ele
       const auto journeyTime = (*person)->GetWaitingTime();
       Statistics::RecordCompletedPassenger(journeyTime);
 
+      // Served well: little waiting on the floors in all (the counterpart of the passengers who take the stairs).
+      const auto totalWaitMs = (*person)->GetTotalWaitMs();
+      const auto happyLimitMs = Configuration::Get().happyWaitSeconds * 1000.0;
+      const auto happy = static_cast<double>(totalWaitMs) <= happyLimitMs;
+      if (happy)
+        Statistics::RecordHappyPassenger();
+
       EventBus::Publish("arrive", Json::Writer::Object()
         .Add("id", static_cast<unsigned long long>((*person)->GetId()))
         .Add("elevator", elevatorId)
         .Add("floor", currentFloor)
-        .Add("journeyMs", static_cast<long long>(journeyTime.count())));
+        .Add("journeyMs", static_cast<long long>(journeyTime.count()))
+        .Add("waitMs", totalWaitMs)
+        .Add("happy", happy));
       person = erase(person);
       continue;
     }

@@ -9,6 +9,7 @@
   "skyLobbies": "",
   "expressFloorFactor": 0.35,
   "stairsPatienceSeconds": 120,
+  "happyWaitSeconds": 20,
   "numberOfCalls": 4294967295,
   "averageCallsPerDay": 2000,
   "maxConcurrentCalls": 200,

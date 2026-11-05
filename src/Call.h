@@ -10,6 +10,7 @@
 #include "Floors.h"
 #include "SimulationClock.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -143,7 +144,16 @@ public:
     std::lock_guard<std::mutex> lock(m_mutex);
     const auto first = !m_boarded;
     m_boarded = true;
+    // Time spent waiting on floors, summed over every boarding (first call, changes of cabin, evacuations).
+    m_totalWaitMs += std::max(0LL, SimulationClock::Now() - m_waitingSinceMs);
     return first;
+  }
+
+  // Simulated time the passenger has waited on the floors for a cabin, up to his last boarding.
+  long long GetTotalWaitMs() const
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_totalWaitMs;
   }
 
   bool HasBoarded() const
@@ -229,5 +239,6 @@ private:
   bool m_boarded{ false };
   unsigned int m_evacuations{ 0U };
   long long m_patienceMs{ 0 };
+  long long m_totalWaitMs{ 0 };
 };
 

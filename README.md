@@ -36,7 +36,8 @@ Build the program from the repository root. With the provided `makefile`, run:
 make
 ```
 
-On Windows, the VS Code build task produces `Elevator.exe`. The task compiles all
+On Windows, open `Elevator.sln` with Visual Studio 2022 or 2026: the project uses the toolset of the Visual Studio
+that opens it (v143 or v145), so it does not need to be retargeted. The VS Code build task produces `Elevator.exe` too. The task compiles all
 source files in `src`, including the statistics module.
 
 Start the program: by default it stops by itself as soon as every call has been generated and
@@ -271,6 +272,15 @@ of the landing, one after the other. They are counted as *took the stairs* in th
 comparisons: a strategy that leaves people waiting pays for it. Your own passengers are patient and never give up.
 A cabin that was coming for somebody who left stops at an empty landing, as in real buildings.
 
+### Served quickly
+
+The other side of the stairs: a passenger who waited on the floors at most `happyWaitSeconds` in all (default 20 s,
+the time after which the waiting people turn from green to amber; with changes of cabin every wait counts) arrives
+happy. On screen he steps out of the cabin, jumps with his arms up and a 👍 rises over him (at high speed only some
+of them are drawn, the count is exact). The share of passengers served quickly is in the panel, in the twin table,
+in the report and in the results, where more is better. The threshold only evaluates the runs: it does not change
+the scenario.
+
 ## Energy
 
 A simple model of a traction elevator with counterweight (`src/Energy.h`), enough to compare strategies and
@@ -330,6 +340,7 @@ out of range, unknown enum names) stop the program at startup with an explanator
 | `callsGenerator.numberOfSimulationDays` | How many simulated days the random generator should run. | Use `1` or more. The generator stops at midnight of the last day, or earlier if `numberOfCalls` is reached. |
 | `callsGenerator.trafficPattern` | Who travels when (see [Simulated day](#simulated-day)). | `Office` (default), `Residential` or `Uniform` (random trips, as in the original project). |
 | `callsGenerator.stairsPatienceSeconds` | Average patience of a passenger before taking the stairs, simulated seconds. | Default `120`; every passenger gets between half and one and a half times this value. `0` = nobody ever gives up. |
+| `callsGenerator.happyWaitSeconds` | A passenger who waited at most this long in all arrives served quickly (👍). | Default `20`. Only an evaluation: it does not change the scenario. |
 | `dispatch.dispatchStrategy` | Which cabin answers a call (see [Comparing strategies](#comparing-strategies)). | `Optimized` (default), `Nearest` or `Collective`. |
 | `dispatch.idleParking` | Where an idle cabin waits. | `Stay` (default), `Lobby` or `Spread` (within the floors of its group). |
 | `zoning.zones` | Zones of the building and their cabins (see [Zones and sky lobbies](#zones-and-sky-lobbies)). | Empty (default): one group of `numberOfElevators` cabins. E.g. `"1-20:6, 21-39:6"`; the cabins are then the ones of the zones. |

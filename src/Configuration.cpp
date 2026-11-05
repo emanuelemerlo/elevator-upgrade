@@ -215,6 +215,9 @@ void Configuration::Validate(const Settings& settings)
     if (!(settings.stairsPatienceSeconds >= 0.0) || settings.stairsPatienceSeconds > 86400.0)
       throw std::invalid_argument("callsGenerator.stairsPatienceSeconds must be between 0 (never) and 86400");
 
+    if (!(settings.happyWaitSeconds >= 0.0) || settings.happyWaitSeconds > 3600.0)
+      throw std::invalid_argument("callsGenerator.happyWaitSeconds must be between 0 and 3600");
+
     if (!(settings.standbyPowerW >= 0.0) || settings.standbyPowerW > 100000.0)
       throw std::invalid_argument("energy.standbyPowerW must be between 0 and 100000 watts");
 
@@ -318,6 +321,7 @@ void Configuration::ParseJson(const std::string& json, Settings& settings)
 
   FindDouble(json, "dayDurationSeconds", settings.dayDurationSeconds);
   FindDouble(json, "stairsPatienceSeconds", settings.stairsPatienceSeconds);
+  FindDouble(json, "happyWaitSeconds", settings.happyWaitSeconds);
   FindDouble(json, "standbyPowerW", settings.standbyPowerW);
   FindDouble(json, "motorEfficiency", settings.motorEfficiency);
   FindDouble(json, "dayStartHour", settings.dayStartHour);

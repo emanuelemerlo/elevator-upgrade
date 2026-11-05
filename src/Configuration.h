@@ -77,6 +77,9 @@ namespace Configuration
     // Average patience of a passenger, in simulated seconds: who has waited longer gives up and takes the stairs.
     // Every passenger of the scenario gets a patience between half and one and a half times this value. 0 = never.
     double stairsPatienceSeconds{ 120.0 };
+    // A passenger who waited on the floors at most this long in all (simulated seconds) arrives happy: the
+    // counterpart of the passengers who take the stairs. Only an evaluation, it does not change the scenario.
+    double happyWaitSeconds{ 20.0 };
 
     // Energy model (see Energy.h): standby power of every cabin and efficiency of the motor.
     double standbyPowerW{ 200.0 };

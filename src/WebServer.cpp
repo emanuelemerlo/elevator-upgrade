@@ -175,6 +175,7 @@ namespace
       .Add("dwellMs", static_cast<long long>(Configuration::Elevator::EnterAndExitTime().count()))
       .Add("pattern", Configuration::PatternName(Configuration::CallsGenerator::TrafficPattern()))
       .Add("patienceS", Configuration::Get().stairsPatienceSeconds, 0)
+      .Add("happyS", Configuration::Get().happyWaitSeconds, 0)
       .Add("layout", Zoning::Layout(Configuration::Get()))
       .Add("groups", GroupsJson());
   }
@@ -255,6 +256,7 @@ namespace
       .Add("maxJourneyMs", static_cast<unsigned long long>(statistics.maxJourneyTimeMs))
       .Add("requeued", static_cast<unsigned long long>(statistics.requeuedCalls))
       .Add("stairs", static_cast<unsigned long long>(statistics.abandonedCalls))
+      .Add("happy", static_cast<unsigned long long>(statistics.happyPassengers))
       .Add("transfers", static_cast<unsigned long long>(statistics.transfers))
       .Add("transferWaitMs", statistics.AverageTransferWaitMs(), 0)
       .Add("capacityLimited", static_cast<unsigned long long>(statistics.capacityLimitedDecisions))
@@ -275,6 +277,7 @@ namespace
       .Add("dispatchStrategy", Configuration::Dispatch::StrategyName(settings.dispatchStrategy))
       .Add("idleParking", Configuration::Dispatch::ParkingName(settings.idleParking))
       .Add("stairsPatienceSeconds", settings.stairsPatienceSeconds, 0)
+      .Add("happyWaitSeconds", settings.happyWaitSeconds, 0)
       .Add("standbyPowerW", settings.standbyPowerW, 0)
       .Add("motorEfficiency", settings.motorEfficiency, 2)
       .Add("layout", Zoning::Layout(settings))
@@ -305,7 +308,7 @@ namespace
   {
     static const char* NumericKeys[] = {
       "numberOfElevators", "numberOfFloors", "maxPeople", "averageCallsPerDay", "maxConcurrentCalls",
-      "numberOfSimulationDays", "dayDurationSeconds", "dayStartHour", "randomSeed", "stairsPatienceSeconds",
+      "numberOfSimulationDays", "dayDurationSeconds", "dayStartHour", "randomSeed", "stairsPatienceSeconds", "happyWaitSeconds",
       "standbyPowerW", "motorEfficiency", "expressFloorFactor",
       "timeToReachTheNextFloorMs", "doorTransitionTimeMs", "enterAndExitTimeMs" };
 

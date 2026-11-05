@@ -150,6 +150,12 @@ void Statistics::RecordTransferWait(const std::chrono::milliseconds waitTime)
   CurrentStore().snapshot.totalTransferWaitMs += static_cast<std::uint64_t>(std::max<long long>(0, waitTime.count()));
 }
 
+void Statistics::RecordHappyPassenger()
+{
+  std::lock_guard<std::mutex> lock(CurrentStore().mutex);
+  ++CurrentStore().snapshot.happyPassengers;
+}
+
 void Statistics::RecordTransfer()
 {
   std::lock_guard<std::mutex> lock(CurrentStore().mutex);

@@ -28,6 +28,7 @@ const ui = {
   statWaiting: $('statWaiting'),
   statRiding: $('statRiding'),
   statDelivered: $('statDelivered'),
+  statDeliveredLabel: $('statDeliveredLabel'),
   statAvgWait: $('statAvgWait'),
   statP95Wait: $('statP95Wait'),
   statMaxWait: $('statMaxWait'),
@@ -287,7 +288,10 @@ function describe(event) {
       return { text: `#${d.id} boards cabin ${d.elevator} at floor ${d.floor} after ${seconds(d.waitMs)}.`, cls: mine ? 'mine' : '' };
     case 'arrive':
       if (!mine && !all) return null;
-      return { text: `#${d.id} reaches floor ${d.floor}, ${seconds(d.journeyMs)} after calling.`, cls: mine ? 'good' : '' };
+      return {
+        text: `#${d.id} reaches floor ${d.floor}, ${seconds(d.journeyMs)} after calling${d.happy ? ' 👍' : ''}.`,
+        cls: mine ? 'good' : '',
+      };
     case 'refused':
       return { text: `Cabin ${d.elevator} is full: #${d.id} waits for another one.` };
     case 'pending':
@@ -434,6 +438,7 @@ function anyDialogOpen() {
 function handleEvent(event) {
   if (event.type === 'assign') showDecision(event);
   if (event.type === 'stairs') addWalker(event.data, event.b || '');
+  if (event.type === 'arrive' && event.data.happy) addCheer(event.data, event.b || '');
   if (event.type === 'batchDone' && !event.data.cancelled) openRuns(lastBatchScenario);
   if (event.type === 'batch') lastBatchScenario = null;
   if (event.type === 'twinFinished') openRuns(state ? state.run.scenario : null);
@@ -441,6 +446,7 @@ function handleEvent(event) {
     stairsReported = 0;
     walkers.length = 0;
     lastWalkerStart.clear();
+    cheers.length = 0;
     if (event.data.batch) lastBatchScenario = event.data.scenario;
     decisionShownAt = 0;
     decisionPinnedUntil = 0;
@@ -491,6 +497,13 @@ function updatePanel() {
   ui.statWaiting.textContent = state.waiting.length;
   ui.statRiding.textContent = riding;
   ui.statDelivered.textContent = stats.completed;
+  ui.statDeliveredLabel.innerHTML = '';
+  ui.statDeliveredLabel.append('Delivered');
+  const quick = document.createElement('small');
+  quick.textContent = stats.completed
+    ? `👍 ${Math.round((100 * stats.happy) / stats.completed)}% within ${state.building.happyS} s`
+    : `👍 within ${state.building.happyS} s`;
+  ui.statDeliveredLabel.append(quick);
   ui.statAvgWait.textContent = stats.boarded ? shortDuration(stats.avgWaitMs) : '–';
   ui.statP95Wait.textContent = stats.boarded ? shortDuration(stats.p95WaitMs) : '–';
   ui.statMaxWait.textContent = stats.boarded ? shortDuration(stats.maxWaitMs) : '–';
@@ -538,6 +551,7 @@ function updatePanel() {
 const TWIN_ROWS = [
   { title: 'Waiting now', value: (b) => b.waiting.length, format: String },
   { title: 'Delivered', value: (b) => b.stats.completed, format: String, higher: true },
+  { title: '👍 Served quickly', value: (b) => (b.stats.completed ? (100 * b.stats.happy) / b.stats.completed : null), format: (v) => `${Math.round(v)}%`, higher: true },
   { title: 'Average wait', value: (b) => (b.stats.boarded ? b.stats.avgWaitMs : null), format: shortDuration },
   { title: '95% wait less', value: (b) => (b.stats.boarded ? b.stats.p95WaitMs : null), format: shortDuration },
   { title: 'Longest wait', value: (b) => (b.stats.boarded ? b.stats.maxWaitMs : null), format: shortDuration },
@@ -1121,6 +1135,9 @@ function drawOneBuilding(ctx, entry, areaX, areaWidth, height, now, night, twin)
     }
   });
 
+  // After the cabins: the cheering passengers stand in front of the doors.
+  drawCheers(ctx, g, entry.key);
+
   return g;
 }
 
@@ -1198,6 +1215,78 @@ function drawWalkers(ctx, g, building) {
     ctx.globalAlpha = progress < 0.9 ? 1 : (1 - progress) / 0.1;
     drawPerson(ctx, x, floorTop(g, walker.floor) + g.floorHeight - 3 - bob, size, walker.color, walker.mine ? COLORS.ink : null);
     ctx.globalAlpha = 1;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The other side of the stairs: a passenger who arrives after little waiting steps out of the cabin,
+// jumps with his arms up and a thumbs up rises over him.
+
+const CHEER_MS = 1500;          // real time of the cheer, whatever the simulation speed
+const MAX_CHEERS = 40;          // at high speed most arrivals are not drawn, the count is in the numbers
+const cheers = [];
+
+function addCheer(data, building) {
+  if (cheers.length >= MAX_CHEERS) return;
+  const now = performance.now();
+  // One cheer at a time in front of the same cabin.
+  if (cheers.some((cheer) => cheer.building === building && cheer.elevator === data.elevator && now - cheer.start < CHEER_MS * 0.6)) return;
+  cheers.push({ building, elevator: data.elevator, floor: data.floor, start: now, mine: myCalls.has(data.id) });
+}
+
+function drawThumb(ctx, x, y, size, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = `${Math.round(size)}px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText('👍', x, y);
+  ctx.restore();
+}
+
+function drawCheers(ctx, g, building) {
+  const now = performance.now();
+
+  for (let index = cheers.length - 1; index >= 0; index -= 1) {
+    const cheer = cheers[index];
+    if (now - cheer.start > CHEER_MS || cheer.floor >= g.floors) {
+      cheers.splice(index, 1);
+      continue;
+    }
+    if (cheer.building !== building) continue;
+
+    const cabin = g.cabins.find((item) => item.id === cheer.elevator);
+    if (!cabin) continue;
+
+    const progress = (now - cheer.start) / CHEER_MS;
+    const size = clamp(g.floorHeight * 0.62, 8, 22);
+    const baseY = floorTop(g, cheer.floor) + g.floorHeight - 3;
+    // Steps out of the cabin onto the landing, then jumps twice.
+    const x = cabin.x - Math.min(1, progress / 0.25) * size * 0.9;
+    const jump = progress > 0.25 ? Math.abs(Math.sin((progress - 0.25) * Math.PI * 2.7)) * size * 0.35 : 0;
+    const fade = progress < 0.8 ? 1 : (1 - progress) / 0.2;
+
+    ctx.globalAlpha = fade;
+    drawPerson(ctx, x, baseY - jump, size, '#3a9a6b', cheer.mine ? COLORS.ink : null);
+
+    // Arms up.
+    if (progress > 0.25 && size >= 10) {
+      const headY = baseY - jump - size + size * 0.32;
+      ctx.strokeStyle = '#3a9a6b';
+      ctx.lineWidth = Math.max(1.5, size * 0.12);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(x - size * 0.28, headY + size * 0.45);
+      ctx.lineTo(x - size * 0.45, headY - size * 0.1);
+      ctx.moveTo(x + size * 0.28, headY + size * 0.45);
+      ctx.lineTo(x + size * 0.45, headY - size * 0.1);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // The thumb rises over the passenger, also when the floors are small.
+    const thumbSize = Math.max(13, size * 0.9);
+    drawThumb(ctx, x, baseY - size - 2 - progress * Math.max(14, g.floorHeight * 0.8), thumbSize, fade);
   }
 }
 
@@ -1383,6 +1472,7 @@ $('newRunButton').addEventListener('click', async () => {
   form.dispatchStrategy.value = s.dispatchStrategy;
   form.idleParking.value = s.idleParking;
   form.stairsPatienceSeconds.value = s.stairsPatienceSeconds;
+  form.happyWaitSeconds.value = s.happyWaitSeconds;
   form.standbyPowerW.value = s.standbyPowerW;
   form.motorEfficiency.value = s.motorEfficiency;
   ui.runError.textContent = '';
@@ -1412,6 +1502,7 @@ ui.runForm.addEventListener('submit', async (event) => {
     dispatchStrategy: form.dispatchStrategy.value,
     idleParking: form.idleParking.value,
     stairsPatienceSeconds: form.stairsPatienceSeconds.value || '0',
+    happyWaitSeconds: form.happyWaitSeconds.value || '20',
     standbyPowerW: form.standbyPowerW.value || '0',
     motorEfficiency: form.motorEfficiency.value || '0.75',
   };
@@ -1598,6 +1689,7 @@ const COLUMNS = [
   { key: 'p95WaitMs', title: '95% wait', format: (v) => seconds(v), lower: true },
   { key: 'maxWaitMs', title: 'Max wait', format: (v) => seconds(v), lower: true },
   { key: 'avgJourneyMs', title: 'Avg journey', format: (v) => seconds(v), lower: true },
+  { key: 'happyPct', title: '👍 quick', format: (v) => (v === undefined ? '–' : `${Math.round(v)}%`), higher: true },
   { key: 'stairs', title: 'Stairs', lower: true },
   { key: 'transfers', title: 'Changes', format: (v) => (v === undefined ? '0' : String(v)) },
   { key: 'energyKWh', title: 'Energy', format: (v) => `${v.toFixed(2)} kWh`, lower: true },
@@ -1611,6 +1703,7 @@ const CHARTS = [
   { key: 'avgJourneyMs', title: 'Average journey (wait, ride and changes)', format: (v) => seconds(v) },
   { key: 'p95WaitMs', title: '95% of the passengers wait less than', format: (v) => seconds(v) },
   { key: 'energyKWh', title: 'Energy for the whole run', format: (v) => `${v.toFixed(1)} kWh` },
+  { key: 'happyPct', title: '👍 Served quickly', format: (v) => `${Math.round(v)}%`, higher: true },
   { key: 'stairs', title: 'Took the stairs', format: (v) => String(v) },
 ];
 
@@ -1667,10 +1760,12 @@ function renderRuns() {
 
   // Best value of every metric among the rows shown.
   const best = {};
-  for (const column of COLUMNS.filter((c) => c.lower)) {
-    const values = rows.filter((run) => run.clean).map((run) => run[column.key]);
+  for (const column of COLUMNS.filter((c) => c.lower || c.higher)) {
+    const values = rows.filter((run) => run.clean && run[column.key] !== undefined).map((run) => run[column.key]);
     // Only when there is something to choose: a column where every run has the same value has no best.
-    if (values.length > 1 && Math.min(...values) !== Math.max(...values)) best[column.key] = Math.min(...values);
+    if (values.length > 1 && Math.min(...values) !== Math.max(...values)) {
+      best[column.key] = column.higher ? Math.max(...values) : Math.min(...values);
+    }
   }
 
   const head = document.createElement('tr');
@@ -1716,6 +1811,7 @@ function renderCharts(rows) {
   }
 
   const charts = CHARTS.filter((chart) => {
+    if (rows.some((run) => run[chart.key] === undefined)) return false;
     const values = rows.map((run) => run[chart.key]);
     return Math.min(...values) !== Math.max(...values);
   });
@@ -1728,12 +1824,13 @@ function renderCharts(rows) {
     const list = document.createElement('ol');
     const values = rows.map((run) => run[chart.key]);
     const max = Math.max(...values, 1e-9);
-    const min = Math.min(...values);
+    const bestValue = chart.higher ? Math.max(...values) : Math.min(...values);
 
-    const sorted = [...rows].sort((a, b) => a[chart.key] - b[chart.key]);
+    // Best first: the lowest value, or the highest one for the metrics where more is better.
+    const sorted = [...rows].sort((a, b) => (chart.higher ? b[chart.key] - a[chart.key] : a[chart.key] - b[chart.key]));
     list.append(...sorted.map((run) => {
       const item = document.createElement('li');
-      if (run[chart.key] === min) item.className = 'best';
+      if (run[chart.key] === bestValue) item.className = 'best';
       const name = document.createElement('span');
       name.className = 'name';
       name.textContent = runName(run);
@@ -1772,6 +1869,7 @@ async function watchRun(run) {
       doorTransitionTimeMs: run.doorMs,
       enterAndExitTimeMs: run.dwellMs,
       stairsPatienceSeconds: run.patienceS,
+      happyWaitSeconds: run.happyS !== undefined ? run.happyS : 20,
       dayDurationSeconds: state ? String(DAY_MS / 1000 / Math.min(state.clock.speed, 360)) : '1440',
     });
     ui.runsDialog.close();

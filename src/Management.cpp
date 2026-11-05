@@ -841,6 +841,7 @@ std::vector<std::string> Management::BuildReport() const
   addGlobalStat("Assigned calls", std::to_string(statistics.assignedCalls));
   addGlobalStat("Boarded passengers", std::to_string(statistics.boardedPassengers));
   addGlobalStat("Completed passengers", std::to_string(statistics.completedPassengers));
+  addGlobalStat("Served quickly", std::to_string(statistics.happyPassengers));
   addGlobalStat("Took the stairs", std::to_string(statistics.abandonedCalls));
   addGlobalStat("Changes of cabin", std::to_string(statistics.transfers));
   addGlobalStat("Wait at the change", FormatSeconds(statistics.AverageTransferWaitMs()));
