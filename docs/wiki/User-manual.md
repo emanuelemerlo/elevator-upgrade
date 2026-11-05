@@ -47,6 +47,23 @@ the interface are in English and are quoted as they appear.
 - 🤬 **Stairs**: who loses patience leaves the queue and walks to the door of the stairs.
 - 👍 **Served quickly**: who arrives after little waiting steps out of the cabin and cheers.
 
+### Who goes where
+
+The original console log said, for every passenger, the destination and the cabin assigned. The building shows the
+same thing:
+
+- Above every waiting person a label like **`C→7`**: assigned to cabin C, going to floor 7, in the colour of the
+  cabin (the colour band on the roof of every shaft). On low floors the labels appear when you point at the floor.
+- A cabin with the doors closed shows the floors of its riders (**`→7 9 12`**) instead of their number.
+- **Point at a cabin**: the people it has to pick up stay lit, the others fade; inside its shaft a tag on every floor
+  where it stops (`↓2 ↑3`: two get out, three get in) and a card with who is on board, who it is picking up and the
+  order of the next stops.
+- **Point at a person**: a card with where they are and where they go, the cabin coming for them (outlined), when the
+  dispatcher expects it (green if it arrives in time, amber if late) and how long they have waited; after a change at
+  a lobby, it says so.
+- **Your own calls**: when the dispatcher assigns one, a dashed line joins your passenger to the chosen cabin for a
+  moment, next to the bars of the *Dispatcher* panel.
+
 ### Panel
 
 - **Right now**: the run (strategy, idle cabins, scenario and seed, *Hands-on run* if you intervened) and the numbers:

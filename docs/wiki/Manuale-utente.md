@@ -48,6 +48,24 @@ Le scritte dell'interfaccia sono in inglese e sono citate come appaiono.
 - 🤬 **Scale**: chi perde la pazienza esce dalla coda e va verso la porta delle scale.
 - 👍 **Servito in fretta**: chi arriva dopo poca attesa scende dalla cabina ed esulta.
 
+### Chi va dove
+
+Il log originale della console diceva, per ogni passeggero, la destinazione e la cabina assegnata. L'edificio mostra la
+stessa cosa:
+
+- Sopra ogni persona in attesa un'etichetta come **`C→7`**: assegnata alla cabina C, diretta al piano 7, nel colore
+  della cabina (la fascia colorata sul tetto di ogni vano). Sui piani bassi le etichette compaiono quando punti il
+  piano.
+- Una cabina con le porte chiuse mostra i piani di chi è a bordo (**`→7 9 12`**) invece del loro numero.
+- **Punta una cabina**: le persone che deve prendere restano accese, le altre sbiadiscono; dentro il suo vano
+  un'etichetta su ogni piano dove si ferma (`↓2 ↑3`: due scendono, tre salgono) e una scheda con chi è a bordo, chi
+  deve prendere e l'ordine delle prossime fermate.
+- **Punta una persona**: una scheda con dove si trova e dove va, la cabina che la viene a prendere (evidenziata), quando
+  il dispatcher la aspetta (verde se arriva in tempo, arancione se in ritardo) e da quanto aspetta; dopo un cambio a un
+  atrio, lo dice.
+- **Le tue chiamate**: quando il dispatcher ne assegna una, una linea tratteggiata unisce per un attimo il tuo
+  passeggero alla cabina scelta, accanto alle barre del pannello *Dispatcher*.
+
 ### Pannello
 
 - **Right now**: la corsa (strategia, cabine ferme, scenario e seme, *Hands-on run* se sei intervenuto) e i numeri:

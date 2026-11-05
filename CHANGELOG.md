@@ -8,6 +8,12 @@ per chi scarica il programma.
 
 ## [Unreleased]
 
+### What is new
+
+- **Who goes where**: every waiting person shows the assigned cabin and the destination (`C→7`), closed cabins show
+  the floors of their riders, pointing at a cabin shows its plan and pointing at a person shows the assigned cabin
+  and the predicted pickup; your own calls get a line to the chosen cabin.
+
 ## [1.0.0] - 2026-11-05
 
 First release of **elevator-upgrade**, the evolution of [elevator](https://github.com/emanuelemerlo/elevator): the

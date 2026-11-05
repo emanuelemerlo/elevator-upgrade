@@ -45,7 +45,8 @@
   <main class="layout">
     <section class="stage" aria-label="Building">
       <canvas id="building" role="img" aria-label="Cross-section of the building with the elevator cabins"></canvas>
-      <p class="hint" id="hint">Click a floor to call a lift, then the floor to go to. Click a cabin to put it out of order.</p>
+      <div class="tip" id="tip" role="tooltip" hidden></div>
+      <p class="hint" id="hint">Click a floor to call a lift, then the floor to go to. Click a cabin to put it out of order. Point at a person or a cabin to see the plan.</p>
       <div class="batch-banner" id="batchBanner" hidden>
         <span id="batchText"></span>
         <button type="button" class="btn" id="batchCancel">Stop comparison</button>

@@ -24,6 +24,7 @@ const ui = {
   profileCaption: $('profileCaption'),
   canvas: $('building'),
   hint: $('hint'),
+  tip: $('tip'),
   offline: $('offline'),
   statWaiting: $('statWaiting'),
   statRiding: $('statRiding'),
@@ -85,7 +86,12 @@ const myCalls = new Set(); // passengers created by clicking on the building
 const history = [];        // { t: simulated ms, waiting: count }
 
 let selectedFloor = null;  // origin floor of a call being placed
-let hover = null;          // { kind: 'floor' | 'cabin', floor, cabin }
+let hover = null;          // { kind: 'floor' | 'cabin', floor, cabin, person }
+let lastMouse = null;      // last pointer position over the building, to follow moving cabins
+// Latest dispatcher decision for every waiting passenger: when it was taken and the pickup time it predicted.
+const predictions = new Map();
+// Short lines from your passengers to the cabin chosen for them (see drawLinks).
+const links = [];
 let layouts = [];          // geometry of every building of the last drawn frame, for hit testing
 
 let decisionPinnedUntil = 0;
@@ -154,6 +160,7 @@ function onState(next) {
 
   recordHistory();
   updatePanel();
+  prunePredictions();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -443,8 +450,19 @@ function anyDialogOpen() {
   return Boolean(document.querySelector('dialog[open]'));
 }
 
+function rememberAssignment(event) {
+  const d = event.data;
+  const key = `${event.b || ''}|${d.id}`;
+  predictions.set(key, { t: event.t, pickupMs: d.pickupMs, elevator: d.elevator, onTheWay: d.onTheWay });
+  if (myCalls.has(d.id)) links.push({ building: event.b || '', id: d.id, elevator: d.elevator, start: performance.now() });
+  while (links.length > 12) links.shift();
+}
+
 function handleEvent(event) {
-  if (event.type === 'assign') showDecision(event);
+  if (event.type === 'assign') {
+    rememberAssignment(event);
+    showDecision(event);
+  }
   if (event.type === 'stairs') addWalker(event.data, event.b || '');
   if (event.type === 'arrive' && event.data.happy) addCheer(event.data, event.b || '');
   if (event.type === 'batchDone' && !event.data.cancelled) openRuns(lastBatchScenario);
@@ -454,6 +472,8 @@ function handleEvent(event) {
     stairsReported = 0;
     walkers.length = 0;
     lastWalkerStart.clear();
+    predictions.clear();
+    links.length = 0;
     cheers.length = 0;
     if (event.data.batch) lastBatchScenario = event.data.scenario;
     decisionShownAt = 0;
@@ -470,6 +490,13 @@ function handleEvent(event) {
 
 // ---------------------------------------------------------------------------------------------
 // Panel: clock, controls, numbers, history
+
+function prunePredictions() {
+  if (predictions.size < 2000) return;
+  const alive = new Set();
+  for (const entry of buildingsOf(state)) for (const person of entry.data.waiting) alive.add(`${entry.key}|${person.id}`);
+  for (const key of predictions.keys()) if (!alive.has(key)) predictions.delete(key);
+}
 
 function recordHistory() {
   const t = state.clock.nowMs;
@@ -900,6 +927,29 @@ function groupColor(building, name) {
   return '#6b737c';
 }
 
+/** Colour of a cabin: the colour of its group with zones, one colour per cabin without zones. */
+function cabinColor(building, elevators, id) {
+  const elevator = elevators.find((item) => item.id === id);
+  if (!elevator) return '#8b96a1';
+  if (elevator.group) return groupColor(building, elevator.group);
+  return GROUP_COLORS[elevators.indexOf(elevator) % GROUP_COLORS.length];
+}
+
+/** Order of the next stops of a cabin: ahead in its direction first, then the others on the way back. */
+function stopOrder(elevator, floors, position) {
+  const unique = [...new Set(floors)];
+  const up = unique.filter((floor) => floor >= position).sort((a, b) => a - b);
+  const down = unique.filter((floor) => floor < position).sort((a, b) => b - a);
+  const downFirst = unique.filter((floor) => floor <= position).sort((a, b) => b - a);
+  const upAfter = unique.filter((floor) => floor > position).sort((a, b) => a - b);
+
+  if (elevator.dir === 'down') return [...downFirst, ...upAfter];
+  if (elevator.dir === 'up') return [...up, ...down];
+  // Idle: the nearest stop decides the direction.
+  const nearest = unique.slice().sort((a, b) => Math.abs(a - position) - Math.abs(b - position))[0];
+  return nearest !== undefined && nearest < position ? [...downFirst, ...upAfter] : [...up, ...down];
+}
+
 function groupOf(building, name) {
   return (building.groups || []).find((group) => group.name === name);
 }
@@ -945,6 +995,13 @@ function drawOneBuilding(ctx, entry, areaX, areaWidth, height, now, night, twin)
 
   const elapsedSinceState = now - state.clock.nowMs;
   const width = areaX + areaWidth;
+
+  // Who goes where: pointing at a cabin shows its plan, pointing at a person shows the cabin taking care of him.
+  const here = hover && hover.building === g.key;
+  const focusCabin = here && hover.kind === 'cabin' ? hover.cabin : here && hover.person ? hover.person.elevator : null;
+  const planCabin = here && hover.kind === 'cabin' ? hover.cabin : null;
+  const colorOf = (id) => cabinColor(b.building, b.elevators, id);
+  g.people = [];
   const wall = mixColor(COLORS.wall, COLORS.wallNight, night * 0.8);
 
   for (let floor = 0; floor < floors; floor += 1) {
@@ -984,11 +1041,39 @@ function drawOneBuilding(ctx, entry, areaX, areaWidth, height, now, night, twin)
     const spacing = size * 0.75;
     const capacity = Math.max(1, Math.floor((g.landingWidth - 46 - door.w) / spacing));
     const shown = people.slice(0, capacity);
+    // Labels "A→7" (assigned cabin, destination of this leg), on two rows when the queue is tight; none when even
+    // two rows do not fit (pointing at a person still tells everything).
+    const labelSize = clamp(h * 0.3, 8, 12);
+    ctx.font = `600 ${labelSize}px "Barlow Condensed", sans-serif`;
+    const labelWidth = Math.max(...shown.map((person) => ctx.measureText(`${person.elevator}→${person.to}`).width), 0) + 3;
+    const labelRows = labelWidth <= spacing ? 1 : labelWidth <= spacing * 2 ? 2 : 0;
+    const labelsFit = labelRows > 0 && h >= 24;
+
     shown.forEach((person, index) => {
       const px = g.landingX + g.landingWidth - 30 - index * spacing;
       const waited = person.waitMs + Math.max(0, elapsedSinceState);
-      const ring = myCalls.has(person.id) ? COLORS.ink : person.evacuated ? COLORS.fault : person.transfer ? COLORS.transfer : null;
+      const assigned = person.elevator && person.elevator !== '?';
+      const mine = focusCabin !== null && person.elevator === focusCabin;
+      const pointed = here && hover.person && hover.person.id === person.id;
+      let ring = myCalls.has(person.id) ? COLORS.ink : person.evacuated ? COLORS.fault : person.transfer ? COLORS.transfer : null;
+      if (mine && planCabin) ring = colorOf(person.elevator);
+      if (pointed) ring = COLORS.lamp;
+
+      ctx.globalAlpha = planCabin && !mine ? 0.3 : 1;
       drawPerson(ctx, px, y + h - 3, size, waitColor(waited), ring);
+
+      if (labelsFit || pointed || (mine && planCabin)) {
+        const row = labelsFit && labelRows === 2 ? index % 2 : 0;
+        const ly = y + h - 3 - size - 1 - row * (labelSize + 1);
+        ctx.font = `600 ${labelSize}px "Barlow Condensed", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillStyle = assigned ? colorOf(person.elevator) : COLORS.inkSoft;
+        ctx.fillText(`${assigned ? person.elevator : '…'}→${person.to}`, px, ly);
+      }
+      ctx.globalAlpha = 1;
+
+      g.people.push({ x: px, y: y + h - 3 - size, w: Math.max(spacing, size * 0.6), h: size + 3, floor, person });
     });
     if (people.length > shown.length) {
       ctx.fillStyle = COLORS.inkSoft;
@@ -1044,6 +1129,10 @@ function drawOneBuilding(ctx, entry, areaX, areaWidth, height, now, night, twin)
       // Colour band of the group on the roof.
       ctx.fillStyle = groupColor(b.building, elevator.group);
       ctx.fillRect(g.shaftsX + index * g.shaftWidth, g.top - 12, g.shaftWidth, 4);
+    } else {
+      // Without zones every cabin has its colour: the same of the "A→7" labels of its passengers.
+      ctx.fillStyle = colorOf(elevator.id);
+      ctx.fillRect(shaftX, g.top - 12, shaftW, 4);
     }
     ctx.fillStyle = COLORS.rail;
     ctx.fillRect(shaftX + 3, shaftTop, 2, shaftBottom - shaftTop);
@@ -1118,10 +1207,10 @@ function drawOneBuilding(ctx, entry, areaX, areaWidth, height, now, night, twin)
       ctx.restore();
     }
 
-    if (hover && hover.kind === 'cabin' && hover.cabin === elevator.id && hover.building === g.key) {
-      ctx.strokeStyle = COLORS.lamp;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(cx - 2, cy - 2, cabinW + 4, cabinH + 4);
+    if (focusCabin === elevator.id) {
+      ctx.strokeStyle = planCabin ? COLORS.lamp : colorOf(elevator.id);
+      ctx.lineWidth = 3;
+      ctx.strokeRect(cx - 2.5, cy - 2.5, cabinW + 5, cabinH + 5);
     }
 
     // Label above the shaft: cabin name, direction lamp, people on board.
@@ -1136,13 +1225,19 @@ function drawOneBuilding(ctx, entry, areaX, areaWidth, height, now, night, twin)
       if (elevator.dir === 'up') drawTriangle(ctx, labelX + 6, labelY, 4, true, COLORS.lamp);
       else if (elevator.dir === 'down') drawTriangle(ctx, labelX + 6, labelY, 4, false, COLORS.lamp);
     }
-    if (riders > perRow || cabinH > 26) {
-      ctx.fillStyle = COLORS.ink;
-      ctx.font = `600 ${clamp(cabinH * 0.3, 9, 13)}px Barlow, sans-serif`;
-      ctx.textAlign = 'right';
+    // On the closed doors: where the people on board are going ("→7 9 12"), or how many they are when it does not fit.
+    if (riders > 0 && opening < 0.5 && cabinH >= 14) {
+      const destinations = [...new Set(elevator.passengers.map((passenger) => passenger.to))].sort((a, c) => a - c);
+      const fontSize = clamp(cabinH * 0.32, 8, 13);
+      ctx.font = `600 ${fontSize}px "Barlow Condensed", sans-serif`;
       ctx.textBaseline = 'top';
-      if (riders > 0 && opening < 0.5) {
-        ctx.fillStyle = '#1d2833';
+      ctx.fillStyle = '#1d2833';
+      const text = `→${destinations.join(' ')}`;
+      if (ctx.measureText(text).width <= cabinW - 6) {
+        ctx.textAlign = 'left';
+        ctx.fillText(text, cx + 3, cy + 2);
+      } else {
+        ctx.textAlign = 'right';
         ctx.fillText(String(riders), cx + cabinW - 3, cy + 2);
       }
     }
@@ -1150,6 +1245,9 @@ function drawOneBuilding(ctx, entry, areaX, areaWidth, height, now, night, twin)
 
   // After the cabins: the cheering passengers stand in front of the doors.
   drawCheers(ctx, g, entry.key);
+
+  if (planCabin) drawPlan(ctx, g, b, planCabin, now);
+  drawLinks(ctx, g, entry.key, colorOf);
 
   return g;
 }
@@ -1309,8 +1407,197 @@ function drawCheers(ctx, g, building) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Who goes where
+
+/** The plan of a cabin: its next stops in order, who gets off (↓) and who gets on (↑) at each of them. */
+function cabinPlan(b, id, now) {
+  const elevator = b.elevators.find((item) => item.id === id);
+  if (!elevator) return null;
+
+  const dropoffs = new Map();
+  for (const passenger of elevator.passengers) dropoffs.set(passenger.to, (dropoffs.get(passenger.to) || 0) + 1);
+  const pickups = new Map();
+  for (const person of b.waiting) {
+    if (person.elevator === id) pickups.set(person.from, (pickups.get(person.from) || 0) + 1);
+  }
+
+  const position = cabinPosition(elevator, now, b.building);
+  const order = stopOrder(elevator, [...dropoffs.keys(), ...pickups.keys()], position);
+  return { elevator, dropoffs, pickups, order };
+}
+
+function drawPlan(ctx, g, b, id, now) {
+  const plan = cabinPlan(b, id, now);
+  if (!plan) return;
+  const index = b.elevators.indexOf(plan.elevator);
+  const shaftX = g.shaftsX + index * g.shaftWidth + g.shaftWidth * 0.1;
+  const shaftW = g.shaftWidth * 0.8;
+  const fontSize = clamp(g.floorHeight * 0.36, 9, 13);
+  const color = cabinColor(b.building, b.elevators, id);
+
+  // A tag next to the shaft at every stop: its place in the plan, then who gets off and who gets on.
+  plan.order.forEach((floor, position) => {
+    const parts = [];
+    if (plan.dropoffs.has(floor)) parts.push(`↓${plan.dropoffs.get(floor)}`);
+    if (plan.pickups.has(floor)) parts.push(`↑${plan.pickups.get(floor)}`);
+    const text = `${position + 1}  ${parts.join(' ')}`;
+
+    ctx.font = `700 ${fontSize}px "Barlow Condensed", sans-serif`;
+    const w = ctx.measureText(text).width + 8;
+    const h = fontSize + 5;
+    // Inside the shaft of the cabin, so that it cannot be taken for a tag of the next one.
+    const x = shaftX + Math.max(0, (shaftW - w) / 2);
+    const y = floorTop(g, floor) + (g.floorHeight - h) / 2;
+
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, 3);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x + 4, y + h / 2 + 0.5);
+  });
+}
+
+/** For a moment after the dispatcher has chosen, a line joins each of your passengers to his cabin. */
+const LINK_MS = 1800;
+
+function drawLinks(ctx, g, building, colorOf) {
+  const now = performance.now();
+  for (let index = links.length - 1; index >= 0; index -= 1) {
+    const link = links[index];
+    const age = now - link.start;
+    if (age > LINK_MS) {
+      links.splice(index, 1);
+      continue;
+    }
+    if (link.building !== building) continue;
+
+    const person = g.people.find((item) => item.person.id === link.id);
+    const cabin = g.cabins.find((item) => item.id === link.elevator);
+    if (!person || !cabin) continue;
+
+    const fade = age < LINK_MS * 0.7 ? 1 : (LINK_MS - age) / (LINK_MS * 0.3);
+    ctx.save();
+    ctx.globalAlpha = fade;
+    ctx.strokeStyle = colorOf(link.elevator);
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([6, 4]);
+    ctx.lineDashOffset = -age / 30;
+    ctx.beginPath();
+    ctx.moveTo(person.x, person.y + 2);
+    ctx.lineTo(cabin.x + cabin.w / 2, cabin.y + cabin.h / 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.beginPath();
+    ctx.arc(cabin.x + cabin.w / 2, cabin.y + cabin.h / 2, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function swatch(color) {
+  return `<span class="swatch" style="background:${color}"></span>`;
+}
+
+function personTip(entry, person, now) {
+  const b = entry.data;
+  const lines = [];
+  const final = person.finalTo !== undefined ? person.finalTo : person.to;
+  lines.push(`<strong>#${person.id}${myCalls.has(person.id) ? ', your passenger' : ''}</strong>`);
+  lines.push(`<p>At floor ${person.from}, going to floor ${final}.</p>`);
+  if (final !== person.to) lines.push(`<p>Changes cabin at floor ${person.to}.</p>`);
+  if (person.transfer) lines.push('<p>Has just changed cabin here.</p>');
+  if (person.evacuated) lines.push('<p>Had to leave a cabin out of order.</p>');
+
+  const waited = person.waitMs + Math.max(0, now - state.clock.nowMs);
+  if (person.elevator && person.elevator !== '?') {
+    const color = cabinColor(b.building, b.elevators, person.elevator);
+    lines.push(`<p>${swatch(color)}Cabin ${escapeHtml(person.elevator)} is coming for him.</p>`);
+    const prediction = predictions.get(`${entry.key}|${person.id}`);
+    if (prediction && prediction.elevator === person.elevator) {
+      const remaining = prediction.t + prediction.pickupMs - now;
+      lines.push(remaining >= 0
+        ? `<p class="early">The dispatcher expects it in ${seconds(remaining)}${prediction.onTheWay ? '' : ', after turning around'}.</p>`
+        : `<p class="late">${seconds(-remaining)} later than the dispatcher expected.</p>`);
+    }
+  } else {
+    lines.push('<p>No cabin yet: every cabin of his group is full or out of order.</p>');
+  }
+  lines.push(`<p>Waiting for ${seconds(waited)}.</p>`);
+  return lines.join('');
+}
+
+function cabinTip(entry, id, now) {
+  const b = entry.data;
+  const plan = cabinPlan(b, id, now);
+  if (!plan) return '';
+  const { elevator } = plan;
+  const color = cabinColor(b.building, b.elevators, id);
+  const motion = elevator.outOfOrder ? 'out of order' : elevator.dir === 'up' ? 'going up' : elevator.dir === 'down' ? 'going down' : 'idle';
+
+  const lines = [`<strong>${swatch(color)}Cabin ${escapeHtml(id)}, ${motion}</strong>`];
+  if (elevator.group) {
+    const group = groupOf(b.building, elevator.group);
+    if (group) lines.push(`<p>${group.shuttle ? `Shuttle between floor 0 and floor ${group.from}` : `Serves floors ${group.from}-${group.to} from floor ${group.lobby}`}.</p>`);
+  }
+
+  const onBoard = elevator.passengers.map((passenger) => passenger.to).sort((a, c) => a - c);
+  lines.push(`<p>On board: ${onBoard.length ? `${onBoard.length}, to ${[...new Set(onBoard)].join(', ')}` : 'nobody'}.</p>`);
+  const waiting = [...plan.pickups.entries()].sort((a, c) => a[0] - c[0]);
+  lines.push(`<p>Picking up: ${waiting.length ? waiting.map(([floor, count]) => `${count} at floor ${floor}`).join(', ') : 'nobody'}.</p>`);
+  if (plan.order.length) lines.push(`<p>Next stops: ${plan.order.join(' → ')}.</p>`);
+  lines.push(`<p>Click to put it ${elevator.outOfOrder ? 'back in service' : 'out of order'}.</p>`);
+  return lines.join('');
+}
+
+function updateTip() {
+  if (!lastMouse || !hover || !state || (hover.kind === 'floor' && !hover.person) || selectedFloor !== null) {
+    ui.tip.hidden = true;
+    return;
+  }
+
+  const entry = buildingsOf(state).find((item) => item.key === hover.building);
+  if (!entry) {
+    ui.tip.hidden = true;
+    return;
+  }
+
+  const now = simNow();
+  const html = hover.kind === 'cabin' ? cabinTip(entry, hover.cabin, now) : personTip(entry, hover.person, now);
+  if (!html) {
+    ui.tip.hidden = true;
+    return;
+  }
+
+  ui.tip.innerHTML = html;
+  ui.tip.hidden = false;
+
+  // Next to the pointer, inside the drawing of the building (not over the hint below it).
+  const stage = ui.canvas.parentElement.getBoundingClientRect();
+  const canvas = ui.canvas.getBoundingClientRect();
+  const tip = ui.tip.getBoundingClientRect();
+  const bottom = canvas.bottom - stage.top;
+  let x = lastMouse.clientX - stage.left + 16;
+  let y = lastMouse.clientY - stage.top + 16;
+  if (x + tip.width > stage.width - 8) x = lastMouse.clientX - stage.left - tip.width - 16;
+  if (y + tip.height > bottom - 8) y = Math.max(8, lastMouse.clientY - stage.top - tip.height - 16);
+  ui.tip.style.left = `${Math.max(8, x)}px`;
+  ui.tip.style.top = `${y}px`;
+}
+
 function frame() {
   drawBuilding();
+  // Cabins move under a still pointer: what it points at is checked again at every frame.
+  if (lastMouse) hover = hitTest(lastMouse);
+  updateTip();
   requestAnimationFrame(frame);
 }
 
@@ -1332,7 +1619,11 @@ function hitTest(event) {
 
     if (x >= g.x0 && x <= g.landingX + g.landingWidth && y >= g.top) {
       const floor = g.floors - 1 - Math.floor((y - g.top) / g.floorHeight);
-      if (floor >= 0 && floor < g.floors) return { kind: 'floor', building: g.key, floor };
+      if (floor >= 0 && floor < g.floors) {
+        // A person of the queue under the pointer: the floor stays the target of a click.
+        const person = (g.people || []).find((item) => item.floor === floor && Math.abs(x - item.x) <= item.w / 2);
+        return { kind: 'floor', building: g.key, floor, person: person ? person.person : null };
+      }
     }
   }
 
@@ -1344,9 +1635,10 @@ function setHint(text, active) {
   ui.hint.classList.toggle('active', Boolean(active));
 }
 
-const DEFAULT_HINT = 'Click a floor to call a lift, then the floor to go to. Click a cabin to put it out of order.';
+const DEFAULT_HINT = 'Click a floor to call a lift, then the floor to go to. Click a cabin to put it out of order. Point at a person or a cabin to see the plan.';
 
 ui.canvas.addEventListener('mousemove', (event) => {
+  lastMouse = { clientX: event.clientX, clientY: event.clientY };
   hover = hitTest(event);
   ui.canvas.style.cursor = hover ? 'pointer' : 'default';
   if (selectedFloor !== null) return;
@@ -1357,7 +1649,11 @@ ui.canvas.addEventListener('mousemove', (event) => {
   }
 });
 
-ui.canvas.addEventListener('mouseleave', () => { hover = null; });
+ui.canvas.addEventListener('mouseleave', () => {
+  hover = null;
+  lastMouse = null;
+  ui.tip.hidden = true;
+});
 
 ui.canvas.addEventListener('click', async (event) => {
   const hit = hitTest(event);

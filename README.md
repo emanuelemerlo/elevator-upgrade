@@ -120,7 +120,11 @@ What you can do:
 | Two buildings | Two variants side by side, live, on the same passengers and the same clock (see [Two buildings](#two-buildings)) |
 
 The *Dispatcher* panel shows the last assignment decision with the cost of every cabin (the extra passenger time the
-call adds to its route), so you can see why a cabin has been chosen. *What happened* lists the important events
+call adds to its route), so you can see why a cabin has been chosen. The building shows who goes where, like
+the log of the console version: a label like `C→7` (cabin, destination) above every waiting person, the destinations
+of the riders on closed cabins, the plan of a cabin (stops, who gets in and out, next stops) when you point at it, a
+card for the person you point at (assigned cabin, predicted pickup, wait), and a dashed line from your own calls to the
+cabin that takes them. *What happened* lists the important events
 (faults, waves, your own passengers); tick *every passenger* to see all of them.
 
 The interface uses a small JSON API, handy for scripts too:
